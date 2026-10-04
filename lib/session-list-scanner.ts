@@ -10,6 +10,7 @@ import type { Dirent } from "node:fs";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { resolveParentsByDirectory } from "./nested-session-parent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 
 export interface ScannedSessionInfo {
@@ -22,6 +23,13 @@ export interface ScannedSessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	parentSessionPath?: string;
+	/**
+	 * True when the parent link came from the child's directory rather than a
+	 * `parentSession` header. Runtimes that do not write that header still group
+	 * children under a folder named for the parent, and such a child is a
+	 * sub-agent, not a fork — forks stay top-level by design.
+	 */
+	parentByDirectory?: boolean;
 	/** True when only header/stat metadata was available for this listing. */
 	detailsPending?: boolean;
 }
@@ -459,14 +467,31 @@ export async function listSessionsIncremental(
 	// SDK reads files newest-mtime first (then reverse filename) so resume can
 	// show results progressively, and its stable sort keeps that order for
 	// sessions with equal activity time.
-	return results
+	return linkNestedChildren(results
 		.flatMap((info, resultIndex) => (info ? [{ info, mtimeMs: mtimes[resultIndex] }] : []))
 		.sort((a, b) =>
 			b.info.modified.getTime() - a.info.modified.getTime()
 			|| b.mtimeMs - a.mtimeMs
 			|| basename(b.info.path).localeCompare(basename(a.info.path)),
 		)
-		.map(({ info }) => info);
+		.map(({ info }) => info));
+}
+
+/**
+ * Recover a parent from where the file sits. Done after the scan so it applies
+ * to index hits as well as freshly read files. A header link always wins: it is
+ * the authoritative one, and only a header-less child needs the directory.
+ */
+function linkNestedChildren(infos: ScannedSessionInfo[]): ScannedSessionInfo[] {
+	const byDirectory = resolveParentsByDirectory(infos.map((info) => info.path));
+	if (byDirectory.size === 0) return infos;
+	return infos.map((info) => {
+		if (info.parentSessionPath) return info;
+		const parentSessionPath = byDirectory.get(info.path);
+		return parentSessionPath
+			? { ...info, parentSessionPath, parentByDirectory: true }
+			: info;
+	});
 }
 
 /** Test seam: drop all in-memory index state. */

@@ -202,7 +202,6 @@ function resolveScannedSessionRelation(
     return { originSessionId, subagent: null };
   }
 }
-
 function mapScannedSession(
   scanned: ScannedSessionInfo,
   pathToId: Map<string, string>,
@@ -226,9 +225,18 @@ function mapScannedSession(
     parentSessionId: originSessionId,
     ...(subagent
       ? { relation: { kind: "subagent" as const, parentSessionId: subagent.parentSessionId, profile: subagent.profile, description: subagent.description, status: subagent.status } }
-      : scanned.parentSessionPath
-        ? { relation: { kind: "fork" as const, ...(originSessionId ? { originSessionId } : {}) } }
-        : {}),
+      : scanned.parentByDirectory && originSessionId
+        // A child in a folder named for its parent, with no pi-web lifecycle
+        // entry: another runtime spawned it. It is still that parent's child,
+        // so it belongs in the family rather than at the top level the way a
+        // fork does. Its own status stays unknown until the server reports one.
+        // Without a resolvable parent it must stay visible as a fork instead:
+        // family grouping drops a child whose parent is absent, so claiming the
+        // relation here would make the session disappear.
+        ? { relation: { kind: "subagent" as const, parentSessionId: originSessionId, profile: "", description: scanned.firstMessage, status: "completed" as const } }
+        : scanned.parentSessionPath
+          ? { relation: { kind: "fork" as const, ...(originSessionId ? { originSessionId } : {}) } }
+          : {}),
     transient: false,
     ...(detailsPending ? { detailsPending: true } : {}),
   };
