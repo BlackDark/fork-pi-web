@@ -1208,6 +1208,11 @@ export function AppShell() {
       <SessionSidebar
         selectedSessionId={selectedSession?.id ?? null}
         onSelectSession={handleSelectSession}
+        onOpenAgents={() => {
+          // Open, never toggle: clicking a second family's chip while the panel
+          // is already showing the first must switch families, not close it.
+          setActiveTopPanel("agents");
+        }}
         onNewSession={handleNewSession}
         initialSessionId={initialSessionId}
         skipInitialProjectSelection={initialNavigation.requestedCwd !== null}

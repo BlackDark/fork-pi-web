@@ -128,7 +128,7 @@ test("keeps streamed tool input out of collapsed markup while counting it", () =
   assert.equal(getTokenEstimateText(block), block.rawInput);
 });
 
-test("renders subagents as standard tool calls with only an extra session button", () => {
+test("renders a sub-agent as an activity row leading with its status, not a tool card", () => {
   const block = {
     type: "toolCall",
     toolCallId: "call-agent-1",
@@ -151,6 +151,7 @@ test("renders subagents as standard tool calls with only an extra session button
       status: "completed",
       runInBackground: false,
       createdAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:12.000Z",
     },
   };
   const html = renderMessage({
@@ -163,12 +164,15 @@ test("renders subagents as standard tool calls with only an extra session button
     onOpenSession() {},
   });
 
-  assert.match(html, /border:1px solid rgba\(34,197,94,0\.25\)/);
-  assert.match(html, />Agent</);
+  // Status leads, and the raw tool name / JSON are gone: a fan-out of these
+  // must not read like a dozen generic tool cards.
+  assert.match(html, /aria-expanded="false"/);
   assert.match(html, />Explore</);
+  assert.match(html, /Find parser/);
+  assert.match(html, />Completed</);
+  assert.match(html, /12s/);
   assert.match(html, /aria-label="Open sub-agent session"/);
-  assert.doesNotMatch(html, />completed</);
-  assert.doesNotMatch(html, />Find parser</);
+  assert.doesNotMatch(html, />Agent</);
 
   const ordinaryHtml = renderMessage({
     role: "assistant",
@@ -180,6 +184,46 @@ test("renders subagents as standard tool calls with only an extra session button
     onOpenSession() {},
   });
   assert.doesNotMatch(ordinaryHtml, /Open sub-agent session/);
+});
+
+test("a live sub-agent row reads as running and a failed one surfaces its error", () => {
+  const render = (details, input) => renderMessage({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [{ type: "toolCall", toolCallId: "call-agent-2", toolName: "Agent", input }],
+  }, {
+    toolResults: new Map([["call-agent-2", { role: "toolResult", toolCallId: "call-agent-2", content: [], details }]]),
+    onOpenSession() {},
+  });
+
+  const live = render({
+    kind: "pi-web-subagent",
+    sessionId: "child-2",
+    profile: "worker",
+    description: "Fix the parser",
+    status: "running",
+    runInBackground: true,
+    createdAt: new Date(Date.now() - 5_000).toISOString(),
+  }, { task: "repair the tokenizer" });
+  assert.match(live, />Running</);
+  assert.match(live, /background/);
+  assert.match(live, /animate-spin/);
+
+  // A settled run must never be measured against the clock: no completedAt
+  // means no duration, not a duration of months.
+  const failed = render({
+    kind: "pi-web-subagent",
+    sessionId: "child-3",
+    profile: "worker",
+    description: "Fix the parser",
+    status: "failed",
+    runInBackground: false,
+    error: "worker exited with code 1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  }, { task: "repair the tokenizer" });
+  assert.match(failed, />Failed</);
+  assert.doesNotMatch(failed, /\b\d+m \d+s<\/span>/);
 });
 
 const COMPLETE_SKILL_EXPANSION = `<skill name="review" location="/skills/review/SKILL.md">
