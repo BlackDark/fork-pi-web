@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import {
   attachSessionProjectInfo,
@@ -288,14 +288,22 @@ export async function DELETE(
     }
     const deletedPathKeys = new Set([...deletedPaths.values()].map((path) => sessionPathKey(path)));
 
-    // Re-attach all direct children to this session's parent (cascade re-parent)
-    // Scan sibling files in the same directory
+    // Re-attach all direct children to this session's parent (cascade re-parent).
+    // Subagent children live in a per-parent subdirectory, so scan both this
+    // session's own directory and that subdirectory.
     try {
-      const files = readdirSync(dir).filter(
-        (file) => file.endsWith(".jsonl") && sessionPathKey(join(dir, file)) !== targetPathKey,
-      );
-      for (const file of files) {
-        const childPath = join(dir, file);
+      const candidateFiles = [...new Set([dir, join(dir, id)].flatMap((scanDir) => {
+        let entries: string[];
+        try {
+          entries = readdirSync(scanDir);
+        } catch {
+          return [];
+        }
+        return entries
+          .filter((file) => file.endsWith(".jsonl"))
+          .map((file) => join(scanDir, file));
+      }))].filter((childPath) => sessionPathKey(childPath) !== targetPathKey);
+      for (const childPath of candidateFiles) {
         if (deletedPathKeys.has(sessionPathKey(childPath))) continue;
         try {
           const content = readFileSync(childPath, "utf8");
@@ -347,10 +355,30 @@ export async function DELETE(
     try { await abortSubagent(id); } catch { /* ordinary session */ }
     await getRpcSession(id)?.shutdown();
     for (const [deletedId, deletedPath] of deletedPaths) {
+      // Only a subagent child's directory is safe to prune: it is named after the
+      // parent and holds nothing but that parent's children. A top-level
+      // session's directory is a project directory and must be left alone.
+      let wasAChild = false;
+      try {
+        const header = JSON.parse(readFileSync(deletedPath, "utf8").split("\n")[0]) as {
+          type?: string;
+          parentSession?: string;
+        };
+        wasAChild = header.type === "session" && typeof header.parentSession === "string";
+      } catch { /* unreadable or already gone; skip pruning */ }
       try {
         unlinkSync(deletedPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (wasAChild) {
+        // ENOTEMPTY means siblings remain; ENOENT that it is already gone.
+        try {
+          rmdirSync(dirname(deletedPath));
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOTEMPTY" && code !== "ENOENT" && code !== "ENOTDIR") throw error;
+        }
       }
       invalidateSessionPathCache(deletedId);
       invalidateSessionManagerCache(deletedPath);

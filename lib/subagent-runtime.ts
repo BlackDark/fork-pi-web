@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
@@ -281,9 +282,15 @@ export function createSubagentController(
         settingsManager.getDefaultTools(),
       );
 
-      const sessionManager = isolatedWorktree
-        ? SessionManager.create(childCwd, undefined, { parentSession: parent.sessionFile })
-        : SessionManager.create(parent.cwd, undefined, { parentSession: parent.sessionFile });
+      // Children live in a directory named after their parent instead of the
+      // flat project directory, so a parent that spawned dozens of short-lived
+      // workers does not bury every other session in the catalogue.
+      const childSessionDir = join(dirname(parent.sessionFile), parentSessionId);
+      const sessionManager = SessionManager.create(
+        isolatedWorktree ? childCwd : parent.cwd,
+        childSessionDir,
+        { parentSession: parent.sessionFile },
+      );
       const createdAt = new Date().toISOString();
       const metadata: SubagentMetadata = {
         version: 1,

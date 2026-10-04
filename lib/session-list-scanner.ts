@@ -243,6 +243,32 @@ export async function scanSessionFileInfo(
 	}
 }
 
+// Subagent children live in a directory named after their parent, so project
+// directories are walked to a bounded depth rather than read one level deep.
+// Depth is capped so a symlink cycle cannot make the walk unbounded.
+export const MAX_SESSION_DIR_DEPTH = 8;
+
+async function collectSessionFiles(dir: string, depth: number, files: string[]): Promise<void> {
+	let entries: Dirent[];
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		// unreadable dir: same skip-as-absent semantics as the SDK
+		return;
+	}
+	for (const entry of entries) {
+		// Descend only into real directories. The per-parent subdirectories are
+		// created by SessionManager, so following symlinks here would only let a
+		// planted link pull jsonl from anywhere on disk into the catalogue, and
+		// would multiply the readdir fan-out.
+		if (entry.isDirectory()) {
+			if (depth < MAX_SESSION_DIR_DEPTH) await collectSessionFiles(join(dir, entry.name), depth + 1, files);
+		} else if (entry.name.endsWith(".jsonl")) {
+			files.push(join(dir, entry.name));
+		}
+	}
+}
+
 async function enumerateSessionFiles(sessionsDir: string): Promise<string[]> {
 	let dirs: Dirent[];
 	try {
@@ -256,14 +282,7 @@ async function enumerateSessionFiles(sessionsDir: string): Promise<string[]> {
 
 	const files: string[] = [];
 	for (const dir of dirs) {
-		const dirPath = join(sessionsDir, dir.name);
-		try {
-			for (const f of await readdir(dirPath)) {
-				if (f.endsWith(".jsonl")) files.push(join(dirPath, f));
-			}
-		} catch {
-			// unreadable project dir: same skip-as-absent semantics as the SDK
-		}
+		await collectSessionFiles(join(sessionsDir, dir.name), 1, files);
 	}
 	return files;
 }
@@ -358,7 +377,8 @@ function queueIndexPersist(): void {
 }
 
 /**
- * Incremental equivalent of SessionManager.listAll(): rescans only files whose
+ * Incremental equivalent of SessionManager.listAll() for flat project
+ * directories: rescans only files whose
  * (size, mtimeMs) changed since the last pass. Output ordering matches the SDK
  * catalogue (modified descending).
  */
