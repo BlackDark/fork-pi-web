@@ -3,7 +3,13 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
 import { subagentStatusColor, summarizeSubagents } from "@/lib/subagent-family-status";
+import { isLiveSubagentStatus } from "@/lib/subagent-client";
 import { useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
+
+/** A child worth polling: the catalogue has not recorded it as finished. */
+function isPossiblyLiveSubagent(session: SessionInfo): boolean {
+  return session.relation?.kind === "subagent" && isLiveSubagentStatus(session.relation.status);
+}
 import { listSessionFamilies } from "@/lib/session-family";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
@@ -1165,9 +1171,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
   ), [focusedSessionId, listScrollTop, listViewportH, sessionFamilies]);
 
   // The chip must agree with the Agents panel, so it reads the same live status
-  // the panel does instead of the catalogue's stale snapshot.
+  // the panel does instead of the catalogue's stale snapshot. Only runs the
+  // catalogue still calls live are worth watching: a settled family must not
+  // wake the poller.
   const allSubagentIds = useMemo(
-    () => sessionFamilies.flatMap((family) => family.subagents.map((session) => session.id)),
+    () => sessionFamilies.flatMap((family) => family.subagents
+      .filter(isPossiblyLiveSubagent)
+      .map((session) => session.id)),
     [sessionFamilies],
   );
   const liveStatuses = useLiveSubagentStatuses(allSubagentIds);

@@ -377,10 +377,10 @@ function queueIndexPersist(): void {
 }
 
 /**
- * Incremental equivalent of SessionManager.listAll() for flat project
- * directories: rescans only files whose
- * (size, mtimeMs) changed since the last pass. Output ordering matches the SDK
- * catalogue (modified descending).
+ * Incremental equivalent of `SessionManager.listAll()` for the sessions tree,
+ * including the per-parent sub-directories the SDK does not descend into: it
+ * rescans only files whose (size, mtimeMs) changed since the last pass. Output
+ * ordering matches the SDK catalogue (modified descending).
  */
 export async function listSessionsIncremental(
 	options: { deferDetails?: boolean } = {},

@@ -5,6 +5,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
 import { abortSubagentRun, steerSubagentRun } from "@/lib/subagent-client";
 import { subagentStatusColor } from "@/lib/subagent-family-status";
+import { isLiveSubagentStatus } from "@/lib/subagent-client";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
 
 interface Props {
@@ -261,7 +262,11 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
       })
     : sortedSubagents;
   const runningCount = subagents.filter((session) => runningSessionIds.has(session.id)).length;
-  const statuses = useLiveSubagentStatuses(subagents.map((session) => session.id));
+  const statuses = useLiveSubagentStatuses(
+    subagents.filter((session) => isLiveSubagentStatus(
+      session.relation?.kind === "subagent" ? session.relation.status : "completed",
+    )).map((session) => session.id),
+  );
   const statusOf = useCallback((session: SessionInfo): SubagentSessionStatus => {
     if (runningSessionIds.has(session.id)) return "running";
     if (session.relation?.kind !== "subagent") return "completed";

@@ -10,6 +10,14 @@ const TERMINAL: ReadonlySet<SubagentSessionStatus> = new Set([
 ]);
 
 /**
+ * A run is dropped after this many unanswered ticks. The server forgets a run
+ * once it has left the in-memory map and answers 404 from then on, so without
+ * this the poller would follow every finished run forever — a settled page
+ * would keep re-reading the whole session tree twice a second.
+ */
+const MAX_MISSES = 3;
+
+/**
  * Live status for sub-agent runs, shared by every surface that shows one (the
  * Agents panel rows, the sidebar family chip, the transcript activity row).
  *
@@ -30,6 +38,8 @@ const statuses = new Map<string, SubagentSessionStatus>();
 // Refcounted: the Agents panel and a transcript row can watch the same run, and
 // the first of them to unmount must not cancel the other's watch.
 const watching = new Map<string, number>();
+/** Consecutive ticks that answered nothing, per run. */
+const missCounts = new Map<string, number>();
 const listeners = new Set<() => void>();
 let snapshot: ReadonlyMap<string, SubagentSessionStatus> = new Map();
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -55,7 +65,15 @@ export async function pollSubagentStatusOnce(): Promise<void> {
   try {
     const results = await Promise.all(ids.map(async (id) => [id, await fetchSubagentStatus(id)] as const));
     for (const [id, status] of results) {
-      if (!status) continue;
+      if (!status) {
+        // No answer. A transient failure must not be read as "gone", but a run
+        // the server has forgotten must not be re-read on every tick either.
+        const misses = (missCounts.get(id) ?? 0) + 1;
+        missCounts.set(id, misses);
+        if (misses >= MAX_MISSES) watching.delete(id);
+        continue;
+      }
+      missCounts.delete(id);
       // The settled status is kept, not dropped: it is what corrects a stale
       // "running" in the session file, and the catalogue would say "running"
       // again if it were discarded. Only the watch stops.
@@ -84,6 +102,7 @@ export function resetSubagentStatusStore(): void {
   inFlight = false;
   watching.clear();
   statuses.clear();
+  missCounts.clear();
   snapshot = new Map();
 }
 
@@ -115,7 +134,10 @@ export function watchSubagentStatus(sessionId: string): () => void {
     released = true;
     const remaining = (watching.get(sessionId) ?? 1) - 1;
     if (remaining > 0) watching.set(sessionId, remaining);
-    else watching.delete(sessionId);
+    else {
+      watching.delete(sessionId);
+      missCounts.delete(sessionId);
+    }
     if (watching.size === 0) stopTimer();
   };
 }
