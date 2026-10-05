@@ -12,14 +12,14 @@ import { basename, dirname, join } from "node:path";
  * What every such runtime does share is the directory: children are written
  * into a folder named after the parent session, so the parent is recoverable
  * from the path alone. Both observed conventions are accepted — a folder named
- * after the parent file's stem, or after the parent's session id.
+ * after the parent file's stem, or after the parent's session id — and the
+ * search walks up, because runtimes nest children to different depths.
  *
- * Returns a map of child path to parent path. Only files directly inside a
- * named folder are linked, so depth is never guessed at.
+ * Returns a map of child path to parent path.
  */
 export function resolveParentsByDirectory(paths: readonly string[]): Map<string, string> {
-  // Every session file directly inside a project directory, keyed by the two
-  // names a child folder could be named after.
+  // Every session file sitting directly in a directory, keyed by the two names
+  // a child folder could be named after.
   const parentsByName = new Map<string, string>();
   const seen = new Set<string>();
   for (const filePath of paths) {
@@ -33,19 +33,30 @@ export function resolveParentsByDirectory(paths: readonly string[]): Map<string,
 
   const links = new Map<string, string>();
   for (const filePath of seen) {
-    const dir = dirname(filePath);
-    const parentDir = dirname(dir);
-    // A child folder is one level below the directory holding the parent file.
-    if (dir === parentDir) continue;
-    const parentPath = parentsByName.get(basename(dir));
-    if (!parentPath || parentPath === filePath) continue;
-    // The parent must actually live in that directory, or a same-named folder
-    // elsewhere would capture an unrelated session.
-    if (dirname(parentPath) !== parentDir) continue;
-    links.set(filePath, parentPath);
+    let dir = dirname(filePath);
+    // Walk up to the nearest ancestor named for a parent session. Depth is not
+    // uniform in practice: pi-web writes children straight into the parent's
+    // folder, while `nicobailon/pi-subagents` nests them per run as
+    // <parent folder>/<child run id>/run-0/session.jsonl. Nearest match wins so
+    // a grandchild joins its own parent rather than the outermost one.
+    for (let depth = 0; depth < MAX_PARENT_WALK; depth += 1) {
+      const ownerDir = dirname(dir);
+      if (ownerDir === dir) break; // reached the filesystem root
+      const candidate = parentsByName.get(basename(dir));
+      // The parent must live in that folder's own parent directory, or a
+      // same-named session elsewhere would capture this file.
+      if (candidate && dirname(candidate) === ownerDir && candidate !== filePath) {
+        links.set(filePath, candidate);
+        break;
+      }
+      dir = ownerDir;
+    }
   }
   return links;
 }
+
+/** Bound on the ancestor walk, so a deep or cyclic tree cannot run away. */
+const MAX_PARENT_WALK = 8;
 
 /** The directory pi-web writes a child into, for a parent session file. */
 export function childSessionDirFor(parentSessionFile: string): string {
