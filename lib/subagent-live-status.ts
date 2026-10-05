@@ -103,6 +103,7 @@ export function resetSubagentStatusStore(): void {
   if (externalTimer !== null) { clearInterval(externalTimer); externalTimer = null; }
   externalWatchers = 0;
   externalInFlight = false;
+  externalWanted.clear();
   externalByRunId.clear();
   externalBySessionPath.clear();
   externalSnapshot = { byRunId: new Map(), bySessionPath: new Map() };
@@ -168,8 +169,12 @@ let externalSnapshot: {
 let externalTimer: ReturnType<typeof setInterval> | null = null;
 let externalWatchers = 0;
 let externalInFlight = false;
-/** Session files the watchers care about, set by the newest subscriber. */
-let externalWantedPaths: string[] = [];
+/** Session files the watchers care about, refcounted per subscriber.
+ *
+ * Last-writer-wins was wrong: the sidebar watches the open session while the
+ * dock can stay open on a different one, so whichever effect ran last decided
+ * what the other one received. */
+const externalWanted = new Map<string, number>();
 
 function publishExternal(): void {
   externalSnapshot = { byRunId: new Map(externalByRunId), bySessionPath: new Map(externalBySessionPath) };
@@ -181,7 +186,7 @@ async function pollExternal(): Promise<void> {
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   externalInFlight = true;
   try {
-    const { byRunId, bySessionPath } = await fetchExternalRuns(undefined, externalWantedPaths);
+    const { byRunId, bySessionPath } = await fetchExternalRuns(undefined, [...externalWanted.keys()]);
     for (const [runId, run] of byRunId) {
       // A settled run is recorded and then ignored: its file stops changing.
       if (!run.live && externalByRunId.has(runId)) continue;
@@ -207,16 +212,26 @@ export function getExternalRunSnapshot(): typeof externalSnapshot {
 
 /** Begin following live runs. The poller stops once every caller has let go. */
 export function watchExternalRuns(sessionPaths?: readonly string[]): () => void {
-  if (sessionPaths) externalWantedPaths = [...sessionPaths];
+  const mine = new Set(sessionPaths ?? []);
+  for (const path of mine) externalWanted.set(path, (externalWanted.get(path) ?? 0) + 1);
   externalWatchers += 1;
   if (externalTimer === null) {
     void pollExternal();
     externalTimer = setInterval(() => { void pollExternal(); }, POLL_MS);
+  } else if (mine.size > 0) {
+    // Already polling, but for a different set: switching sessions would
+    // otherwise show the previous one's status for up to one interval.
+    void pollExternal();
   }
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    for (const path of mine) {
+      const remaining = (externalWanted.get(path) ?? 1) - 1;
+      if (remaining > 0) externalWanted.set(path, remaining);
+      else externalWanted.delete(path);
+    }
     externalWatchers -= 1;
     if (externalWatchers === 0 && externalTimer !== null) {
       clearInterval(externalTimer);

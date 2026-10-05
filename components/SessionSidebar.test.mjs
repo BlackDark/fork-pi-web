@@ -158,3 +158,13 @@ test("reloads the list when another extension names a session we have not listed
   // Guard against a reload loop: the trigger depends on the catalogue catching up.
   assert.match(source, /knownSessionPaths = useMemo\(/);
 });
+
+test("asks about another extension's runs only for the session that is open", () => {
+  // Polling every session meant one request carrying every child path in the
+  // sidebar, which the server caps — past the cap matches dropped silently and
+  // live status stopped working. The open session is polled; the count on every
+  // row is free because family grouping already knows it.
+  assert.match(source, /const openFamilyPaths = useMemo\(\(\) => \{[\s\S]*?sessionFamilies\.find\(\(entry\) => entry\.root\.id === selectedSessionId\)/);
+  assert.match(source, /useExternalSubagentRuns\(openFamilyPaths\)/);
+  assert.doesNotMatch(source, /allSubagentPaths/);
+});

@@ -1181,20 +1181,27 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
     [sessionFamilies],
   );
   const liveStatuses = useLiveSubagentStatuses(allSubagentIds);
-  const allSubagentPaths = useMemo(
-    () => sessionFamilies.flatMap((family) => family.subagents.map((session) => session.path)),
-    [sessionFamilies],
-  );
+  // Only the session you have open is polled for another extension's runs.
+  // Asking about every session's children meant one request carrying every
+  // child path in the sidebar, which the server has to cap — past the cap the
+  // matches dropped silently and live status stopped working with no error.
+  // The count on each row is free: family grouping already knows it.
+  const openFamilyPaths = useMemo(() => {
+    const family = sessionFamilies.find((entry) => entry.root.id === selectedSessionId);
+    return family ? family.subagents.map((session) => session.path) : [];
+  }, [selectedSessionId, sessionFamilies]);
   // Runs another extension owns, so the chip agrees with the dock and the
   // transcript rather than showing a stale snapshot.
   // Name the session files the chip needs, so the server canonicalises them:
   // the paths the extension recorded can differ by symlink resolution.
-  const { bySessionPath: externalStatuses } = useExternalSubagentRuns(allSubagentPaths);
+  const { bySessionPath: externalStatuses } = useExternalSubagentRuns(openFamilyPaths);
 
   // A child started by another extension never touches /api/agent/running, so
   // none of the transitions this list reloads on ever fire for it and the new
   // session stayed invisible until the page was reloaded. Reload as soon as a
-  // run names a session file the catalogue has not seen.
+  // run names a session file the catalogue has not seen. Only the open session
+  // is polled, so this fires for that session's children; another session's
+  // children are picked up when it is opened.
   const knownSessionPaths = useMemo(
     () => new Set(allSessions.map((session) => session.path)),
     [allSessions],
