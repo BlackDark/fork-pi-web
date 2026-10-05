@@ -9,7 +9,9 @@ export interface Tab {
   id: string;
   label: string;
   filePath: string;
-  kind?: "terminal";
+  kind?: "terminal" | "agents";
+  /** Session whose sub-agents an "agents" dock tab shows. */
+  agentsSessionId?: string;
   closing?: boolean;
   sourceSessionId?: string | null;
   initialDisplayMode?: FileViewerDisplayMode;

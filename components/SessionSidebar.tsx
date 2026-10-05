@@ -129,8 +129,8 @@ function sessionListUrl(summary: boolean, force: boolean): string {
 interface Props {
   selectedSessionId: string | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean, entryId?: string, blockIndex?: number) => void;
-  /** Open the Agents panel for the family of a sidebar row. */
-  onOpenAgents?: () => void;
+  /** Open the sub-agent dock for a family root, from that family's sidebar row. */
+  onOpenAgents?: (rootSessionId: string) => void;
   onNewSession?: (sessionId: string, cwd: string) => void;
   initialSessionId?: string | null;
   skipInitialProjectSelection?: boolean;
@@ -1933,7 +1933,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
                     subagentStatus={familySubagentStatus}
                     onOpenAgents={() => {
                       handleSelectSessionFromList(family.root);
-                      onOpenAgents?.();
+                      onOpenAgents?.(family.root.id);
                     }}
                     onRenamed={loadSessions}
                     onDeleted={(id) => {

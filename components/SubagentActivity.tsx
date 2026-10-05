@@ -4,20 +4,29 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useLiveSubagentStatus } from "@/hooks/useLiveSubagentStatus";
 import { subagentStatusColor } from "@/lib/subagent-family-status";
-import type { SubagentToolDetails } from "@/lib/subagent-extension";
+import type { SubagentRunView } from "@/lib/subagent-tool-adapter";
 
-function isLive(status: SubagentToolDetails["status"]): boolean {
-  return status === "starting" || status === "queued" || status === "running";
+const LIVE_STATUSES = new Set(["starting", "queued", "running"]);
+
+function isLive(status: SubagentRunView["status"]): boolean {
+  return LIVE_STATUSES.has(status);
 }
 
-function formatDuration(details: SubagentToolDetails, status: SubagentToolDetails["status"], now: number): string {
-  const start = new Date(details.createdAt).getTime();
+function formatDuration(
+  createdAt: string | undefined,
+  completedAt: string | undefined,
+  status: SubagentRunView["status"],
+  now: number,
+): string {
+  if (!createdAt) return "";
+  const start = new Date(createdAt).getTime();
   if (!Number.isFinite(start)) return "";
   // Only a live run has no completedAt, and only a live run should fall back to
   // the clock. Measuring a settled run against now() reports years for a run
   // whose result was simply never timestamped.
-  const end = details.completedAt
-    ? new Date(details.completedAt).getTime()
+  // A run whose runtime never reported a start time simply shows no duration.
+  const end = completedAt
+    ? new Date(completedAt).getTime()
     : isLive(status) ? now : NaN;
   if (!Number.isFinite(end) || end < start) return "";
   const seconds = Math.round((end - start) / 1000);
@@ -29,7 +38,7 @@ function formatDuration(details: SubagentToolDetails, status: SubagentToolDetail
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-function StatusGlyph({ status }: { status: SubagentToolDetails["status"] }) {
+function StatusGlyph({ status }: { status: SubagentRunView["status"] }) {
   if (isLive(status)) {
     return (
       <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -59,14 +68,14 @@ function StatusGlyph({ status }: { status: SubagentToolDetails["status"] }) {
  * so it leads; the task and the worktree only appear on expand.
  */
 export function SubagentActivity({
-  details,
+  run,
   task,
   resultText,
   expanded,
   onToggle,
   onOpenSession,
 }: {
-  details: SubagentToolDetails;
+  run: SubagentRunView;
   /** From the tool input, not the details: older runs have no task in details. */
   task?: string;
   /** The tool result body. For `get_subagent_result` this is the whole point. */
@@ -79,8 +88,8 @@ export function SubagentActivity({
   // The persisted snapshot is written once at dispatch and never revised, so a
   // background run's row would claim "running" forever. The server is the only
   // source that can settle it.
-  const liveStatus = useLiveSubagentStatus(details.sessionId);
-  const status = liveStatus ?? details.status;
+  const liveStatus = useLiveSubagentStatus(run.sessionId);
+  const status = liveStatus ?? run.status;
   // A live run has no completedAt, so its duration is the elapsed time and has
   // to tick; a settled row never moves again.
   const [now, setNow] = useState(() => Date.now());
@@ -91,7 +100,7 @@ export function SubagentActivity({
   }, [status]);
 
   const color = subagentStatusColor(status);
-  const duration = formatDuration(details, status, now);
+  const duration = formatDuration(run.createdAt, run.completedAt, status, now);
 
   return (
     <div style={{ border: `1px solid ${color}33`, borderRadius: 7, background: `${color}0a`, fontSize: 12 }}>
@@ -109,16 +118,16 @@ export function SubagentActivity({
           <span style={{ color, flexShrink: 0, display: "grid", placeItems: "center" }}>
             <StatusGlyph status={status} />
           </span>
-          <span style={{ color, fontWeight: 600, fontSize: 11, flexShrink: 0 }}>{details.profile}</span>
+          <span style={{ color, fontWeight: 600, fontSize: 11, flexShrink: 0 }}>{run.agent}</span>
           <span
             style={{ color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}
-            title={details.description}
+            title={run.task || run.sessionName || ""}
           >
-            {details.description}
+            {run.task || run.sessionName || run.agent}
           </span>
-          {details.runInBackground && (
+          {run.mode && run.mode !== "single" && (
             <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0, border: "1px solid var(--border)", borderRadius: 8, padding: "0 5px" }}>
-              {t("agentSwitcher.background")}
+              {t(`agentSwitcher.mode.${run.mode}`)}
             </span>
           )}
           <span style={{ fontSize: 11, color, flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -135,10 +144,10 @@ export function SubagentActivity({
             <polyline points="2 3.5 5 6.5 8 3.5" />
           </svg>
         </button>
-        {onOpenSession && (
+        {onOpenSession && run.sessionId && (
           <button
             type="button"
-            onClick={() => onOpenSession(details.sessionId)}
+            onClick={() => { if (run.sessionId) onOpenSession(run.sessionId); }}
             title={t("subagent.open")}
             aria-label={t("subagent.open")}
             style={{ width: 32, display: "grid", placeItems: "center", border: "none", borderLeft: "1px solid var(--border)", background: "none", color: "var(--text-muted)", cursor: "pointer", flexShrink: 0 }}
@@ -164,14 +173,8 @@ export function SubagentActivity({
               {resultText}
             </pre>
           )}
-          {details.worktreeBranch && (
-            <Field
-              label={t("agentSwitcher.worktree")}
-              value={`${details.worktreeBranch}${details.worktreePath ? ` — ${details.worktreePath}` : ""}`}
-            />
-          )}
-          {details.error && <Field label={t("agentSwitcher.error")} value={details.error} danger />}
-          {details.worktreeCleanupError && <Field label={t("agentSwitcher.worktree")} value={details.worktreeCleanupError} danger />}
+          {run.worktree && <Field label={t("agentSwitcher.worktree")} value={t("agentSwitcher.ownWorktree")} />}
+          {run.error && <Field label={t("agentSwitcher.error")} value={run.error} danger />}
         </div>
       )}
     </div>

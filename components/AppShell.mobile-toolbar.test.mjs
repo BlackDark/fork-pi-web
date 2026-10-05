@@ -24,19 +24,22 @@ test("uses a compact narrow-mobile toolbar with a floating action layer", () => 
   }
 });
 
-test("only renders the Agents switcher when the active session family has subagents", () => {
+test("only offers the Agents entry point when the active session family has subagents", () => {
   assert.match(source, /const hasSubagentSessions = Boolean\(activeSessionFamily\?\.subagents\.length\)/);
-  assert.match(source, /\{hasSubagentSessions && \(\s*<button[\s\S]*?toggleTopPanel\("agents", mobile\)/);
-  assert.match(source, /activeTopPanel === "agents" && activeSessionFamily && selectedSession/);
+  assert.match(source, /\{hasSubagentSessions && \([\s\S]*?openAgentsDock\(selectedSession\.id\)/);
 });
 
-test("keeps the Agents panel open while switching sessions and positions it at the left", () => {
-  assert.match(source, /const AGENT_PANEL_WIDTH = 420/);
-  assert.match(
-    source,
-    /if \(activeTopPanel === "agents"\)[\s\S]*?left: topBarRect\.left[\s\S]*?width: Math\.min\(AGENT_PANEL_WIDTH, topBarRect\.width\)/,
-  );
-  assert.match(source, /<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
+test("docks sub-agents beside files and terminals instead of over the chat", () => {
+  // A popup took the conversation away while a fan-out ran; the dock is a peer
+  // tab, so it keeps its own state and never covers the transcript.
+  assert.match(source, /const \[agentsDockSessionId, setAgentsDockSessionId\] = useState<string \| null>\(null\)/);
+  assert.match(source, /const openAgentsDock = useCallback\(\(sessionId: string\) => \{/);
+  assert.match(source, /setActiveFileTabId\(`agents:\$\{sessionId\}`\)/);
+  assert.match(source, /kind: "agents" as const/);
+  assert.match(source, /<SubagentDock/);
+  // The dropdown is gone: one surface, not two ways to reach the same list.
+  assert.doesNotMatch(source, /<AgentSessionPanel/);
+  assert.doesNotMatch(source, /activeTopPanel === "agents"/);
 });
 
 test("only renders branch toolbar controls for sessions with branches", () => {

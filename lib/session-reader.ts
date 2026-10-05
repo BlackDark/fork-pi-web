@@ -2,7 +2,7 @@ import {
   SessionManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { closeSync, type Dirent, fstatSync, openSync, readSync, statSync } from "fs";
+import { closeSync, type Dirent, existsSync, fstatSync, openSync, readSync, statSync } from "fs";
 import { readdir } from "fs/promises";
 import { isAbsolute, join, normalize as normalizePath, relative, resolve as resolvePath, sep } from "path";
 import type { AgentMessage, ImageContent, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
@@ -159,8 +159,26 @@ export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise
     projectByCwd.set(cwd, await resolveProject(cwd));
   }));
 
+  // A sub-agent that ran in a temporary isolation worktree leaves a cwd that no
+  // longer exists once the run ends, and the worktree is not named the way
+  // inferRemovedWorktree recognises. The child's own project is then
+  // unresolvable, so it inherits the project of the parent it belongs to. That
+  // is the truth about where the work happened, and it keeps a finished run from
+  // showing up as its own broken project.
+  const resolvedProjectOf = (session: SessionInfo): ProjectInfo | undefined => {
+    const own = session.cwd ? projectByCwd.get(session.cwd) : undefined;
+    if (own && existsSync(session.cwd)) return own;
+    const parentId = session.parentSessionId;
+    if (!parentId) return own;
+    const parent = sessions.find((candidate) => candidate.id === parentId);
+    if (!parent?.cwd || parent.cwd === session.cwd) return own;
+    const parentProject = projectByCwd.get(parent.cwd);
+    if (!parentProject || !existsSync(parent.cwd)) return own;
+    return { ...parentProject, isWorktree: own?.isWorktree ?? parentProject.isWorktree };
+  };
+
   return sessions.map((session) => {
-    const project = session.cwd ? projectByCwd.get(session.cwd) : undefined;
+    const project = resolvedProjectOf(session);
     const projectRoot = project?.projectRoot ?? session.cwd;
     return {
       ...session,

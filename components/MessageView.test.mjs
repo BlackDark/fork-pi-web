@@ -226,6 +226,47 @@ test("a live sub-agent row reads as running and a failed one surfaces its error"
   assert.doesNotMatch(failed, /\b\d+m \d+s<\/span>/);
 });
 
+test("another runtime's fan-out renders one status row per child", () => {
+  // nicobailon/pi-subagents reports every child of a fan-out in one tool
+  // result, under its own tool name and details shape.
+  const block = {
+    type: "toolCall",
+    toolCallId: "call-subagent-1",
+    toolName: "subagent",
+    input: { agent: "reviewer", task: "review the diff" },
+  };
+  const result = {
+    role: "toolResult",
+    toolCallId: block.toolCallId,
+    content: [{ type: "text", text: "done" }],
+    details: {
+      mode: "parallel",
+      results: [
+        { index: 0, agent: "reviewer", task: "correctness", sessionId: "c1", runId: "r1", exitCode: 0, usage: {} },
+        { index: 1, agent: "reviewer", task: "tests", sessionId: "c2", runId: "r2", exitCode: 1, usage: {} },
+      ],
+    },
+  };
+  const html = renderMessage({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [block],
+  }, {
+    toolResults: new Map([[block.toolCallId, result]]),
+    onOpenSession() {},
+  });
+
+  assert.equal((html.match(/aria-label="Open sub-agent session"/g) ?? []).length, 2);
+  assert.match(html, />Completed</);
+  assert.match(html, />Failed</);
+  // The runtime's own tool name is replaced by the run's identity, so a fan-out
+  // reads as children rather than as an opaque tool card.
+  assert.doesNotMatch(html, />subagent</);
+  assert.match(html, /correctness/);
+  assert.match(html, /tests/);
+});
+
 const COMPLETE_SKILL_EXPANSION = `<skill name="review" location="/skills/review/SKILL.md">
 References are relative to /skills/review.
 

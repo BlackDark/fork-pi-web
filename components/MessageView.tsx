@@ -17,7 +17,7 @@ import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thin
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
-import type { SubagentToolDetails } from "@/lib/subagent-extension";
+import { subagentRunsFromToolResult } from "@/lib/subagent-tool-adapter";
 import { SubagentActivity } from "./SubagentActivity";
 import { CODEMODE_TOOL_NAME, codemodeCalls, codemodeScript, codemodeScriptPreview, stripCodemodeHeader } from "@/lib/codemode-view";
 import { CodemodeCallList } from "./CodemodeToolView";
@@ -1107,24 +1107,25 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
   );
 }
 
-function isSubagentToolDetails(value: unknown): value is SubagentToolDetails {
-  if (!value || typeof value !== "object") return false;
-  const details = value as Partial<SubagentToolDetails>;
-  return details.kind === "pi-web-subagent" && typeof details.sessionId === "string";
-}
-
 function ToolCallBlock({ block, result, duration, onOpenSession }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(() => isToolCallExpanded(block.toolCallId));
+  // A fan-out has one expand state per child, keyed by position because the
+  // runtime's per-child ids are not stable across re-renders of history.
+  const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
   const toggleExpanded = () => {
     const next = !expanded;
     setToolCallExpanded(block.toolCallId, next);
     setExpanded(next);
   };
+  const toggleRow = (position: number) => {
+    setExpandedRows((previous) => ({ ...previous, [position]: !previous[position] }));
+  };
   const inputStr = getToolCallInputText(block);
   const isStreamingInput = block.rawInput !== undefined;
   const isEditTool = isEditToolName(block.toolName);
-  const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
+  const subagentRuns = subagentRunsFromToolResult(block.toolName, result?.details);
+  const subagentTask = typeof block.input?.task === "string" ? block.input.task : undefined;
   const resultDiff = result && !result.isError ? getResultDiff(result) : null;
   const patchFiles = getApplyPatchFiles(block, result);
   const patchLabel = isApplyPatchToolName(block.toolName)
@@ -1154,16 +1155,23 @@ function ToolCallBlock({ block, result, duration, onOpenSession }: { block: Tool
 
   // A sub-agent run gets its own row: its status is the useful part, and a
   // fan-out of a dozen of them would otherwise bury the conversation in cards.
-  if (subagent) {
+  if (subagentRuns) {
+    // One tool call can carry a whole fan-out, so a dozen children render as a
+    // dozen rows in one place rather than interleaving with the conversation.
     return (
-      <SubagentActivity
-        details={subagent}
-        task={typeof block.input?.task === "string" ? block.input.task : undefined}
-        resultText={resultText}
-        expanded={expanded}
-        onToggle={toggleExpanded}
-        onOpenSession={onOpenSession}
-      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {subagentRuns.map((run, position) => (
+          <SubagentActivity
+            key={run.key}
+            run={run}
+            task={position === 0 ? subagentTask : undefined}
+            resultText={position === subagentRuns.length - 1 ? resultText : null}
+            expanded={expandedRows[position] ?? (position === 0 && expanded)}
+            onToggle={() => toggleRow(position)}
+            onOpenSession={onOpenSession}
+          />
+        ))}
+      </div>
     );
   }
   return (
