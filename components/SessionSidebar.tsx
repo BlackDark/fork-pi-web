@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, typ
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
 import { subagentStatusColor, summarizeSubagents } from "@/lib/subagent-family-status";
 import { isLiveSubagentStatus } from "@/lib/subagent-client";
-import { useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
+import { useExternalSubagentRuns, useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
 
 /** A child worth polling: the catalogue has not recorded it as finished. */
 function isPossiblyLiveSubagent(session: SessionInfo): boolean {
@@ -1181,6 +1181,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
     [sessionFamilies],
   );
   const liveStatuses = useLiveSubagentStatuses(allSubagentIds);
+  // Runs another extension owns, so the chip agrees with the dock and the
+  // transcript rather than showing a stale snapshot.
+  const { bySessionPath: externalStatuses } = useExternalSubagentRuns();
 
   return (
     <div
@@ -1901,11 +1904,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
             {virtualIndices.map((index) => {
               const family = sessionFamilies[index];
               const familySessions = [family.root, ...family.subagents];
-              const familySubagents = family.subagents.map((session) => (
-                session.relation?.kind === "subagent"
-                  ? { ...session, relation: { ...session.relation, status: liveStatuses.get(session.id) ?? session.relation.status } }
-                  : session
-              ));
+              const familySubagents = family.subagents.map((session) => {
+                if (session.relation?.kind !== "subagent") return session;
+                const status = externalStatuses.get(session.path)?.status
+                  ?? liveStatuses.get(session.id)
+                  ?? session.relation.status;
+                return { ...session, relation: { ...session.relation, status } };
+              });
               const familySummary = summarizeSubagents(familySubagents);
               // A child the wrapper still reports as running overrides anything
               // persisted, including a stale "completed".

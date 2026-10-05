@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import { useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
+import { useExternalSubagentRuns, useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
 import { isLiveSubagentStatus } from "@/lib/subagent-client";
 import { abortSubagentRun, steerSubagentRun } from "@/lib/subagent-client";
 import { subagentStatusColor } from "@/lib/subagent-family-status";
@@ -63,12 +63,23 @@ export function SubagentDock({
     [subagents],
   );
   const liveStatuses = useLiveSubagentStatuses(liveIds);
+  const { bySessionPath } = useExternalSubagentRuns();
+
+  const externalOf = useCallback(
+    (session: SessionInfo) => bySessionPath.get(session.path),
+    [bySessionPath],
+  );
 
   const statusOf = useCallback((session: SessionInfo): SubagentSessionStatus => {
     if (runningSessionIds.has(session.id)) return "running";
+    // A run another extension owns is authoritative over the catalogue: its
+    // persisted state is live, while the session file only ever holds a
+    // settled snapshot written when the tool returned.
+    const external = bySessionPath.get(session.path);
+    if (external) return external.status;
     if (session.relation?.kind !== "subagent") return "completed";
     return liveStatuses.get(session.id) ?? session.relation.status;
-  }, [liveStatuses, runningSessionIds]);
+  }, [bySessionPath, liveStatuses, runningSessionIds]);
 
   const rows = useMemo(() => subagents.map((session) => ({
     session,
@@ -207,6 +218,28 @@ export function SubagentDock({
               </div>
               <p style={{ margin: 0, color: "var(--text-dim)", fontSize: 11 }}>{rootSession.name || rootSession.firstMessage}</p>
               <Field label={t("agentSwitcher.task")} value={relation?.description || selected.session.firstMessage} />
+              {(() => {
+                const activity = externalOf(selected.session)?.activity;
+                if (!activity) return null;
+                return (
+                  <>
+                    {activity.tool && <Field label={t("agentSwitcher.workingOnLabel")} value={activity.tool} />}
+                    {activity.path && <Field label={t("agentSwitcher.path")} value={activity.path} />}
+                    {(activity.turnCount !== undefined || activity.toolCount !== undefined) && (
+                      <Field
+                        label={t("agentSwitcher.progress")}
+                        value={t("agentSwitcher.turnsAndTools", {
+                          turns: activity.turnCount ?? 0,
+                          tools: activity.toolCount ?? 0,
+                        })}
+                      />
+                    )}
+                    {activity.state === "needs_attention" && (
+                      <p style={{ margin: 0, color: "#d97706", fontSize: 11 }}>{t("agentSwitcher.needsAttention")}</p>
+                    )}
+                  </>
+                );
+              })()}
               {selectedIsLive ? (
                 <>
                   <input

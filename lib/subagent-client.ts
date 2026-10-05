@@ -55,3 +55,57 @@ export async function steerSubagentRun(sessionId: string, message: string): Prom
 export async function abortSubagentRun(sessionId: string): Promise<void> {
   await post(sessionId, { action: "abort" });
 }
+
+/** A run another extension persisted, as pi-web needs it. */
+export interface ExternalRunView {
+  runId: string;
+  status: SubagentSessionStatus;
+  rawState?: string;
+  live: boolean;
+  activity?: { tool?: string; path?: string; state?: string; turnCount?: number; toolCount?: number };
+  error?: string;
+}
+
+interface ExternalResponse {
+  runs?: Record<string, {
+    status?: SubagentSessionStatus;
+    rawState?: string;
+    live?: boolean;
+    activity?: ExternalRunView["activity"];
+    error?: string;
+    sessionFiles?: string[];
+  }>;
+}
+
+/**
+ * Runs persisted by another extension, keyed by run id and by the child's
+ * session FILE path. `runIds` empty asks for whatever that extension currently
+ * marks live, which is bounded; its run directory is never enumerated because
+ * it grows without bound and is reaped underneath us.
+ */
+export async function fetchExternalRuns(runIds?: readonly string[]): Promise<{
+  byRunId: Map<string, ExternalRunView>;
+  bySessionPath: Map<string, ExternalRunView>;
+}> {
+  const query = runIds?.length ? `runIds=${encodeURIComponent(runIds.join(","))}` : "active=1";
+  const response = await fetch(`/api/subagents/external?${query}`, { cache: "no-store" });
+  if (!response.ok) return { byRunId: new Map(), bySessionPath: new Map() };
+  const payload = await response.json().catch(() => ({})) as ExternalResponse;
+  const byRunId = new Map<string, ExternalRunView>();
+  const bySessionPath = new Map<string, ExternalRunView>();
+  for (const [runId, run] of Object.entries(payload.runs ?? {})) {
+    if (!run.status) continue;
+    const view: ExternalRunView = {
+      runId,
+      status: run.status,
+      live: run.live === true,
+      ...(run.rawState ? { rawState: run.rawState } : {}),
+      ...(run.activity ? { activity: run.activity } : {}),
+      ...(run.error ? { error: run.error } : {}),
+    };
+    byRunId.set(runId, view);
+    // Later runs win for a session: a resumed run is the current one.
+    for (const sessionFile of run.sessionFiles ?? []) bySessionPath.set(sessionFile, view);
+  }
+  return { byRunId, bySessionPath };
+}

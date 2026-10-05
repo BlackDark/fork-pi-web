@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import { useLiveSubagentStatus } from "@/hooks/useLiveSubagentStatus";
+import { useExternalRunStatus, useLiveSubagentStatus } from "@/hooks/useLiveSubagentStatus";
 import { subagentStatusColor } from "@/lib/subagent-family-status";
 import type { SubagentRunView } from "@/lib/subagent-tool-adapter";
 
@@ -89,7 +89,10 @@ export function SubagentActivity({
   // background run's row would claim "running" forever. The server is the only
   // source that can settle it.
   const liveStatus = useLiveSubagentStatus(run.sessionId);
-  const status = liveStatus ?? run.status;
+  // A run started by another extension persists its own state; its recorded
+  // status is a settled snapshot, so the live one has to come from elsewhere.
+  const external = useExternalRunStatus(run.runId);
+  const status = liveStatus ?? external?.status ?? run.status;
   // A live run has no completedAt, so its duration is the elapsed time and has
   // to tick; a settled row never moves again.
   const [now, setNow] = useState(() => Date.now());
@@ -133,6 +136,11 @@ export function SubagentActivity({
           <span style={{ fontSize: 11, color, flexShrink: 0, whiteSpace: "nowrap" }}>
             {t(`agentSwitcher.status.${status}`)}
           </span>
+          {external?.activity?.tool && status === "running" && (
+            <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>
+              {t("agentSwitcher.workingOn", { tool: external.activity.tool })}
+            </span>
+          )}
           {duration && (
             <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}</span>
           )}

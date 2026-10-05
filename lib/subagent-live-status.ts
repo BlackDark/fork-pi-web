@@ -1,6 +1,6 @@
 "use client";
 
-import { fetchSubagentStatus } from "./subagent-client";
+import { fetchExternalRuns, fetchSubagentStatus, type ExternalRunView } from "./subagent-client";
 import type { SubagentSessionStatus } from "./types";
 
 const POLL_MS = 2_000;
@@ -41,6 +41,7 @@ const watching = new Map<string, number>();
 /** Consecutive ticks that answered nothing, per run. */
 const missCounts = new Map<string, number>();
 const listeners = new Set<() => void>();
+const externalListeners = new Set<() => void>();
 let snapshot: ReadonlyMap<string, SubagentSessionStatus> = new Map();
 let timer: ReturnType<typeof setInterval> | null = null;
 let inFlight = false;
@@ -99,6 +100,12 @@ function ensureTimer(): void {
  */
 export function resetSubagentStatusStore(): void {
   stopTimer();
+  if (externalTimer !== null) { clearInterval(externalTimer); externalTimer = null; }
+  externalWatchers = 0;
+  externalInFlight = false;
+  externalByRunId.clear();
+  externalBySessionPath.clear();
+  externalSnapshot = { byRunId: new Map(), bySessionPath: new Map() };
   inFlight = false;
   watching.clear();
   statuses.clear();
@@ -139,5 +146,78 @@ export function watchSubagentStatus(sessionId: string): () => void {
       missCounts.delete(sessionId);
     }
     if (watching.size === 0) stopTimer();
+  };
+}
+
+/**
+ * Runs persisted by another sub-agent extension, kept beside the in-process
+ * ones because the sidebar, the dock and the transcript all want to show a
+ * child the same way regardless of which runtime started it.
+ *
+ * Unlike the in-process poller this asks for whatever that extension currently
+ * marks live rather than watching named ids: its run directory grows without
+ * bound, so it is never enumerated. Terminal runs are picked up once and then
+ * left alone, which is exactly what a settled child needs.
+ */
+const externalByRunId = new Map<string, ExternalRunView>();
+const externalBySessionPath = new Map<string, ExternalRunView>();
+let externalSnapshot: {
+  byRunId: ReadonlyMap<string, ExternalRunView>;
+  bySessionPath: ReadonlyMap<string, ExternalRunView>;
+} = { byRunId: new Map(), bySessionPath: new Map() };
+let externalTimer: ReturnType<typeof setInterval> | null = null;
+let externalWatchers = 0;
+let externalInFlight = false;
+
+function publishExternal(): void {
+  externalSnapshot = { byRunId: new Map(externalByRunId), bySessionPath: new Map(externalBySessionPath) };
+  for (const listener of externalListeners) listener();
+}
+
+async function pollExternal(): Promise<void> {
+  if (externalInFlight) return;
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+  externalInFlight = true;
+  try {
+    const { byRunId, bySessionPath } = await fetchExternalRuns();
+    for (const [runId, run] of byRunId) {
+      // A settled run is recorded and then ignored: its file stops changing.
+      if (!run.live && externalByRunId.has(runId)) continue;
+      externalByRunId.set(runId, run);
+    }
+    for (const [sessionPath, run] of bySessionPath) externalBySessionPath.set(sessionPath, run);
+    publishExternal();
+  } catch {
+    // Best effort; the caller keeps what it had.
+  } finally {
+    externalInFlight = false;
+  }
+}
+
+export function subscribeExternalRuns(listener: () => void): () => void {
+  externalListeners.add(listener);
+  return () => { externalListeners.delete(listener); };
+}
+
+export function getExternalRunSnapshot(): typeof externalSnapshot {
+  return externalSnapshot;
+}
+
+/** Begin following live runs. The poller stops once every caller has let go. */
+export function watchExternalRuns(): () => void {
+  externalWatchers += 1;
+  if (externalTimer === null) {
+    void pollExternal();
+    externalTimer = setInterval(() => { void pollExternal(); }, POLL_MS);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    externalWatchers -= 1;
+    if (externalWatchers === 0 && externalTimer !== null) {
+      clearInterval(externalTimer);
+      externalTimer = null;
+    }
   };
 }
