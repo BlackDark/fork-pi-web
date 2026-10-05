@@ -125,3 +125,61 @@ export function subagentRunsFromToolResult(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+/**
+ * The completion notice another extension posts into the parent's transcript.
+ *
+ * A background run's tool result is written once at dispatch and never revised,
+ * so the notice is the only place the finished outcome appears. pi-web used to
+ * render these as a raw text blob even though the notice carries structured
+ * per-child rows.
+ */
+export interface SubagentNoticeView {
+  key: string;
+  agent: string;
+  status: SubagentSessionStatus;
+  task?: string;
+  resultPreview?: string;
+  durationMs?: number;
+  runId?: string;
+  sessionLabel?: string;
+  background: boolean;
+}
+
+/** `SubagentNotifyDetails` states are the settled four; no live states appear. */
+function noticeStatus(state: unknown): SubagentSessionStatus {
+  if (state === "completed") return "completed";
+  if (state === "stopped") return "aborted";
+  // "paused" is an interrupt, not a user stop.
+  if (state === "paused") return "interrupted";
+  return "failed";
+}
+
+export function subagentNoticesFromDetails(details: unknown): SubagentNoticeView[] | null {
+  if (!Array.isArray(details) || details.length === 0) return null;
+  const notices: SubagentNoticeView[] = [];
+  details.forEach((entry, position) => {
+    if (!isRecord(entry)) return;
+    const agent = typeof entry.agent === "string" ? entry.agent : "";
+    // childRuns is an array of { runId } when a workflow parent reports its
+    // children; the first one is the run this notice belongs to.
+    const childRuns = Array.isArray(entry.childRuns) ? entry.childRuns : [];
+    const childRunId = isRecord(childRuns[0]) && typeof childRuns[0].runId === "string"
+      ? childRuns[0].runId
+      : undefined;
+    notices.push({
+      key: (typeof entry.workflowRunId === "string" ? entry.workflowRunId : undefined)
+        ?? childRunId
+        ?? `notice-${position}`,
+      agent,
+      status: noticeStatus(entry.status),
+      ...(typeof entry.taskInfo === "string" ? { task: entry.taskInfo } : {}),
+      ...(typeof entry.resultPreview === "string" ? { resultPreview: entry.resultPreview } : {}),
+      ...(typeof entry.durationMs === "number" ? { durationMs: entry.durationMs } : {}),
+      ...(typeof entry.workflowRunId === "string" ? { runId: entry.workflowRunId } : {}),
+      ...(typeof entry.sessionLabel === "string" ? { sessionLabel: entry.sessionLabel } : {}),
+      background: entry.source !== "foreground",
+    });
+  });
+  return notices.length > 0 ? notices : null;
+}

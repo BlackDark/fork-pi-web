@@ -267,6 +267,35 @@ test("another runtime's fan-out renders one status row per child", () => {
   assert.match(html, /tests/);
 });
 
+test("another runtime's completion notice renders as a group, not a raw blob", () => {
+  // A background run's tool result is written once at dispatch, so this notice
+  // is the only place the finished outcome appears.
+  const html = renderMessage({
+    role: "custom",
+    customType: "subagent-notify",
+    content: "Subagent updates above.",
+    details: [
+      { agent: "worker", status: "completed", source: "async", taskInfo: "fix the parser", resultPreview: "done", durationMs: 4200, workflowRunId: "r1" },
+      { agent: "reviewer", status: "failed", source: "async", resultPreview: "boom", durationMs: 900 },
+    ],
+  }, {});
+
+  assert.match(html, /1 of 2 sub-agents need attention/);
+  assert.match(html, /aria-expanded="false"/);
+  // The generic custom card would show the raw text and a JSON blob instead.
+  assert.doesNotMatch(html, /Subagent updates above/);
+});
+
+test("an unrelated custom message keeps the generic card", () => {
+  const html = renderMessage({
+    role: "custom",
+    customType: "some-other-extension",
+    content: "hello",
+    details: [{ agent: "a", status: "completed" }],
+  }, {});
+  assert.match(html, /hello/);
+});
+
 const COMPLETE_SKILL_EXPANSION = `<skill name="review" location="/skills/review/SKILL.md">
 References are relative to /skills/review.
 

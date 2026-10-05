@@ -157,6 +157,8 @@ export const enLocale: LocalePlugin = {
     "agentSwitcher.path": "Path",
     "agentSwitcher.progress": "Progress",
     "agentSwitcher.needsAttention": "This sub-agent is asking for attention.",
+    "agentSwitcher.noticeCompleted": "{count} sub-agents finished",
+    "agentSwitcher.noticeProblems": "{count} of {total} sub-agents need attention",
     "agentSwitcher.mode.parallel": "parallel",
     "agentSwitcher.mode.chain": "chained",
     "agentSwitcher.mode.workflow": "workflow",

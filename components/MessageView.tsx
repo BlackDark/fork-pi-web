@@ -17,7 +17,8 @@ import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thin
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
-import { subagentRunsFromToolResult } from "@/lib/subagent-tool-adapter";
+import { subagentNoticesFromDetails, subagentRunsFromToolResult } from "@/lib/subagent-tool-adapter";
+import { subagentStatusColor } from "@/lib/subagent-family-status";
 import { SubagentActivity } from "./SubagentActivity";
 import { CODEMODE_TOOL_NAME, codemodeCalls, codemodeScript, codemodeScriptPreview, stripCodemodeHeader } from "@/lib/codemode-view";
 import { CodemodeCallList } from "./CodemodeToolView";
@@ -1724,7 +1725,78 @@ function CompactionFileList({ title, files }: { title: string; files: string[] }
   );
 }
 
-function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
+/** Completion notices another sub-agent extension posts into this transcript. */
+function SubagentNoticeGroup({ message }: { message: CustomMessage }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const notices = useMemo(() => subagentNoticesFromDetails(message.details), [message.details]);
+  if (!notices) return null;
+
+  const completed = notices.filter((notice) => notice.status === "completed").length;
+  const problems = notices.length - completed;
+  const headline = problems > 0
+    ? t("agentSwitcher.noticeProblems", { count: problems, total: notices.length })
+    : t("agentSwitcher.noticeCompleted", { count: notices.length });
+  const tone = problems > 0 ? "#dc2626" : "#16a34a";
+
+  return (
+    <div style={{ marginBottom: 16, border: `1px solid ${tone}33`, borderRadius: 8, background: `${tone}0a`, fontSize: 12 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 8,
+          padding: "7px 10px", background: "none", border: "none", color: "var(--text)", cursor: "pointer", textAlign: "left",
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={tone} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m5 13 4 4L19 7" />
+        </svg>
+        <strong style={{ fontSize: 12, color: tone }}>{headline}</strong>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: "auto", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+          <polyline points="2 3.5 5 6.5 8 3.5" />
+        </svg>
+      </button>
+      {expanded && (
+        <div style={{ borderTop: `1px solid ${tone}26` }}>
+          {notices.map((notice) => (
+            <div key={notice.key} style={{ padding: "7px 10px", borderBottom: "1px solid var(--border)", display: "grid", gap: 3 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 11, color: subagentStatusColor(notice.status) }}>{notice.agent}</span>
+                <span style={{ fontSize: 11, color: subagentStatusColor(notice.status) }}>{t(`agentSwitcher.status.${notice.status}`)}</span>
+                {notice.background && (
+                  <span style={{ fontSize: 10, color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 8, padding: "0 5px" }}>{t("agentSwitcher.background")}</span>
+                )}
+                {notice.durationMs !== undefined && (
+                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>
+                    {Math.round(notice.durationMs / 1000)}s
+                  </span>
+                )}
+              </div>
+              {notice.task && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{notice.task}</span>}
+              {notice.resultPreview && (
+                <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{notice.resultPreview}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomMessageView(props: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
+  const { message } = props;
+  // A completion notice carries structured rows the generic card would bury.
+  // Dispatched from a wrapper so this component's hooks stay unconditional.
+  if (message.customType === "subagent-notify" && subagentNoticesFromDetails(message.details)) {
+    return <SubagentNoticeGroup message={message} />;
+  }
+  return <GenericCustomMessageView {...props} />;
+}
+
+function GenericCustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
   const { t } = useI18n();
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);

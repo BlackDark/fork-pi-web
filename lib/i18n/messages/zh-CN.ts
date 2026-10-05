@@ -157,6 +157,8 @@ export const zhCNLocale: LocalePlugin = {
     "agentSwitcher.path": "路径",
     "agentSwitcher.progress": "进度",
     "agentSwitcher.needsAttention": "该子 Agent 需要你关注。",
+    "agentSwitcher.noticeCompleted": "{count} 个子 Agent 已完成",
+    "agentSwitcher.noticeProblems": "{total} 个中有 {count} 个子 Agent 需要关注",
     "agentSwitcher.mode.parallel": "并行",
     "agentSwitcher.mode.chain": "链式",
     "agentSwitcher.mode.workflow": "工作流",
