@@ -17,7 +17,7 @@ import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thin
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
-import { subagentNoticesFromDetails, subagentRunsFromToolResult } from "@/lib/subagent-tool-adapter";
+import { subagentNoticesFromDetails, subagentRunsFromToolResult, type SubagentRunView } from "@/lib/subagent-tool-adapter";
 import { subagentStatusColor } from "@/lib/subagent-family-status";
 import { SubagentActivity } from "./SubagentActivity";
 import { CODEMODE_TOOL_NAME, codemodeCalls, codemodeScript, codemodeScriptPreview, stripCodemodeHeader } from "@/lib/codemode-view";
@@ -1108,12 +1108,19 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
   );
 }
 
+/** Worst-wins across a fan-out, so the group block is toned by its worst child. */
+function worstStatus(statuses: readonly SubagentRunView["status"][]): SubagentRunView["status"] {
+  const order: SubagentRunView["status"][] = ["failed", "aborted", "interrupted", "running", "starting", "queued", "completed"];
+  return order.find((status) => statuses.includes(status)) ?? "completed";
+}
+
 function ToolCallBlock({ block, result, duration, onOpenSession }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(() => isToolCallExpanded(block.toolCallId));
   // A fan-out has one expand state per child, keyed by position because the
   // runtime's per-child ids are not stable across re-renders of history.
   const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
+  const [groupOutputExpanded, setGroupOutputExpanded] = useState(false);
   const toggleExpanded = () => {
     const next = !expanded;
     setToolCallExpanded(block.toolCallId, next);
@@ -1166,12 +1173,41 @@ function ToolCallBlock({ block, result, duration, onOpenSession }: { block: Tool
             key={run.key}
             run={run}
             task={position === 0 ? subagentTask : undefined}
-            resultText={position === subagentRuns.length - 1 ? resultText : null}
+            // One child: the call's output belongs to that child. Several: it
+            // is the aggregate, so it is shown once under the group rather than
+            // attached to whichever row happened to be last.
+            resultText={subagentRuns.length === 1 ? resultText : null}
             expanded={expandedRows[position] ?? (position === 0 && expanded)}
             onToggle={() => toggleRow(position)}
             onOpenSession={onOpenSession}
           />
         ))}
+        {subagentRuns.length > 1 && groupOutputExpanded && resultText?.trim() && (
+          <pre
+            style={{
+              margin: 0, padding: "8px 10px", maxHeight: 320, overflow: "auto",
+              background: "var(--bg-subtle)", border: `1px solid ${subagentStatusColor(worstStatus(subagentRuns.map((run) => run.status)))}26`, borderRadius: 7,
+              color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5,
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}
+          >
+            {resultText}
+          </pre>
+        )}
+        {subagentRuns.length > 1 && (
+          <button
+            type="button"
+            onClick={() => setGroupOutputExpanded((value) => !value)}
+            aria-expanded={groupOutputExpanded}
+            style={{
+              alignSelf: "flex-start", height: 24, padding: "0 9px",
+              border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)",
+              color: "var(--text-muted)", fontSize: 11, cursor: "pointer",
+            }}
+          >
+            {groupOutputExpanded ? t("subagent.hideOutput") : t("subagent.showOutput")}
+          </button>
+        )}
       </div>
     );
   }

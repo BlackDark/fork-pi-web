@@ -1191,6 +1191,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
   // the paths the extension recorded can differ by symlink resolution.
   const { bySessionPath: externalStatuses } = useExternalSubagentRuns(allSubagentPaths);
 
+  // A child started by another extension never touches /api/agent/running, so
+  // none of the transitions this list reloads on ever fire for it and the new
+  // session stayed invisible until the page was reloaded. Reload as soon as a
+  // run names a session file the catalogue has not seen.
+  const knownSessionPaths = useMemo(
+    () => new Set(allSessions.map((session) => session.path)),
+    [allSessions],
+  );
+  const externalPathsKey = useMemo(
+    () => [...externalStatuses.keys()].sort().join("\u0000"),
+    [externalStatuses],
+  );
+  useEffect(() => {
+    if (externalPathsKey === "") return;
+    const unknown = externalPathsKey.split("\u0000").some((path) => !knownSessionPaths.has(path));
+    if (unknown) void loadSessions(false, true);
+  }, [externalPathsKey, knownSessionPaths, loadSessions]);
+
   return (
     <div
       ref={sessionPaneResizer.panelRef}

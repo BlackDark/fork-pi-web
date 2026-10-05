@@ -122,6 +122,8 @@ export const zhCNLocale: LocalePlugin = {
     "agents.scope.project": "项目",
     "agents.overridden": "被覆盖",
     "subagent.open": "打开子代理会话",
+    "subagent.showOutput": "显示输出",
+    "subagent.hideOutput": "隐藏输出",
     "codemode.calls": "工具调用",
     "codemode.callCount": "{count} 次调用",
     "codemode.callCountOne": "1 次调用",

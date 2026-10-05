@@ -122,6 +122,8 @@ export const enLocale: LocalePlugin = {
     "agents.scope.project": "project",
     "agents.overridden": "Overridden",
     "subagent.open": "Open sub-agent session",
+    "subagent.showOutput": "Show output",
+    "subagent.hideOutput": "Hide output",
     "codemode.calls": "Tool calls",
     "codemode.callCount": "{count} calls",
     "codemode.callCountOne": "1 call",

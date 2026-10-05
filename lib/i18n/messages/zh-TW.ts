@@ -122,6 +122,8 @@ export const zhTWLocale: LocalePlugin = {
     "agents.scope.project": "專案",
     "agents.overridden": "已被覆寫",
     "subagent.open": "開啟子代理工作階段",
+    "subagent.showOutput": "顯示輸出",
+    "subagent.hideOutput": "隱藏輸出",
     "codemode.calls": "工具呼叫",
     "codemode.callCount": "{count} 次呼叫",
     "codemode.callCountOne": "1 次呼叫",

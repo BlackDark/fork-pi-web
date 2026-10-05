@@ -286,6 +286,35 @@ test("another runtime's completion notice renders as a group, not a raw blob", (
   assert.doesNotMatch(html, /Subagent updates above/);
 });
 
+test("a fan-out shows its output once under the group, not on an arbitrary row", () => {
+  const block = {
+    type: "toolCall",
+    toolCallId: "call-subagent-2",
+    toolName: "subagent",
+    input: {},
+  };
+  const result = {
+    role: "toolResult",
+    toolCallId: block.toolCallId,
+    content: [{ type: "text", text: "the aggregate reply" }],
+    details: {
+      mode: "parallel",
+      results: [
+        { index: 0, agent: "a", task: "t1", sessionId: "c1", runId: "r1", exitCode: 0, usage: {} },
+        { index: 1, agent: "b", task: "t2", sessionId: "c2", runId: "r2", exitCode: 0, usage: {} },
+      ],
+    },
+  };
+  const html = renderMessage({
+    role: "assistant", provider: "anthropic", model: "claude-test", content: [block],
+  }, { toolResults: new Map([[block.toolCallId, result]]), onOpenSession() {} });
+
+  // Per-child text is not in the details, so the call's output is shown once and
+  // labelled, rather than hanging off whichever row happened to be last.
+  assert.match(html, /Show output/);
+  assert.equal((html.match(/aria-label="Open sub-agent session"/g) ?? []).length, 2);
+});
+
 test("an unrelated custom message keeps the generic card", () => {
   const html = renderMessage({
     role: "custom",
