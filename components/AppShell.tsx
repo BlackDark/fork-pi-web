@@ -1211,7 +1211,12 @@ export function AppShell() {
     if (cwd === projectTrustCwd) setProjectTrust(status);
   }, [projectTrustCwd]);
 
-  const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
+  // The active tab can be a file, a terminal or the sub-agent dock, so it has to
+  // be resolved against every dock tab rather than only the file ones. Reading
+  // it from fileTabs alone made the dock's own tab resolve to null, which fell
+  // through to the "no file open" placeholder.
+  const activePanelTab = panelTabs.find((tab) => tab.id === activeFileTabId) ?? null;
+  const activeFileTab = activePanelTab?.kind === "agents" ? null : activePanelTab;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - Pi Web` : "Pi Web";
 
@@ -2543,20 +2548,25 @@ export function AppShell() {
               )}
             />
           ) : !terminalTabs.some((tab) => tab.id === activeFileTabId)
-            && activeFileTab?.kind !== "agents" ? (
+            && activePanelTab?.kind !== "agents" ? (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
                {translate("files.noneOpen")}
             </div>
           ) : null}
-          {activeFileTab?.kind === "agents" && agentsDockFamily && (
+          {activePanelTab?.kind === "agents" && agentsDockFamily && (
             <div style={{ width: "100%", height: "100%" }}>
               <SubagentDock
-                key={activeFileTab.id}
+                key={activePanelTab.id}
                 rootSession={agentsDockFamily.root}
                 subagents={agentsDockFamily.subagents}
                 runningSessionIds={runningSessionIds}
                 onSelectSession={handleSelectSession}
               />
+            </div>
+          )}
+          {activePanelTab?.kind === "agents" && !agentsDockFamily && (
+            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
+              {translate("agentSwitcher.dockGone")}
             </div>
           )}
           {terminalTabs.map((tab) => (

@@ -54,11 +54,12 @@ export function useLiveSubagentStatuses(sessionIds: readonly string[]): Readonly
  * the child's session file path. Both maps are empty when that extension is not
  * installed or has nothing live, which is the common case.
  */
-export function useExternalSubagentRuns(): {
+export function useExternalSubagentRuns(sessionPaths?: readonly string[]): {
   byRunId: ReadonlyMap<string, ExternalRunView>;
   bySessionPath: ReadonlyMap<string, ExternalRunView>;
 } {
-  useEffect(() => watchExternalRuns(), []);
+  const key = sessionPaths ? [...sessionPaths].sort().join("\u0000") : "";
+  useEffect(() => watchExternalRuns(key === "" ? undefined : key.split("\u0000")), [key]);
   return useSyncExternalStore(
     subscribeExternalRuns,
     getExternalRunSnapshot,

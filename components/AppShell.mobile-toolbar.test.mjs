@@ -112,3 +112,15 @@ test("closes top-bar dropdowns when the file panel expands to full width", () =>
   assert.match(source, /onClick=\{handleRightPanelExpandToggle\}/);
   assert.match(source, /if \(rightPanelFullWidth\) setActiveTopPanel\(null\);/);
 });
+
+test("the Agents dock tab renders its panel instead of the empty-files placeholder", () => {
+  // The active tab was resolved against fileTabs only, so the dock's own tab
+  // resolved to null and clicking it showed "no file open".
+  assert.match(source, /const activePanelTab = panelTabs\.find\(\(tab\) => tab\.id === activeFileTabId\) \?\? null/);
+  assert.match(source, /const activeFileTab = activePanelTab\?\.kind === "agents" \? null : activePanelTab/);
+  assert.match(source, /activePanelTab\?\.kind === "agents" && agentsDockFamily/);
+  // The placeholder must stand down for the dock rather than render under it.
+  assert.match(source, /activePanelTab\?\.kind !== "agents" \? \(/);
+  // A dock whose session has gone says so, instead of rendering nothing.
+  assert.match(source, /activePanelTab\?\.kind === "agents" && !agentsDockFamily/);
+});

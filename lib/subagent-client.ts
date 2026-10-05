@@ -83,11 +83,20 @@ interface ExternalResponse {
  * marks live, which is bounded; its run directory is never enumerated because
  * it grows without bound and is reaped underneath us.
  */
-export async function fetchExternalRuns(runIds?: readonly string[]): Promise<{
+export async function fetchExternalRuns(
+  runIds?: readonly string[],
+  sessionPaths?: readonly string[],
+): Promise<{
   byRunId: Map<string, ExternalRunView>;
   bySessionPath: Map<string, ExternalRunView>;
 }> {
-  const query = runIds?.length ? `runIds=${encodeURIComponent(runIds.join(","))}` : "active=1";
+  const params = new URLSearchParams();
+  if (runIds?.length) params.set("runIds", runIds.join(","));
+  else params.set("active", "1");
+  // Naming the paths lets the server canonicalise them; the browser cannot
+  // canonicalise its own copy, and the two spellings differ under a symlink.
+  if (sessionPaths?.length) params.set("paths", sessionPaths.join(","));
+  const query = params.toString();
   const response = await fetch(`/api/subagents/external?${query}`, { cache: "no-store" });
   if (!response.ok) return { byRunId: new Map(), bySessionPath: new Map() };
   const payload = await response.json().catch(() => ({})) as ExternalResponse;

@@ -1181,9 +1181,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgent
     [sessionFamilies],
   );
   const liveStatuses = useLiveSubagentStatuses(allSubagentIds);
+  const allSubagentPaths = useMemo(
+    () => sessionFamilies.flatMap((family) => family.subagents.map((session) => session.path)),
+    [sessionFamilies],
+  );
   // Runs another extension owns, so the chip agrees with the dock and the
   // transcript rather than showing a stale snapshot.
-  const { bySessionPath: externalStatuses } = useExternalSubagentRuns();
+  // Name the session files the chip needs, so the server canonicalises them:
+  // the paths the extension recorded can differ by symlink resolution.
+  const { bySessionPath: externalStatuses } = useExternalSubagentRuns(allSubagentPaths);
 
   return (
     <div

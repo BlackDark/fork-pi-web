@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -99,4 +99,34 @@ test("an absent temp root is an empty result, not a failure", async () => {
     if (previous === undefined) delete process.env.PI_SUBAGENTS_TEMP_ROOT;
     else process.env.PI_SUBAGENTS_TEMP_ROOT = previous;
   }
+});
+
+test("matches a run to the caller's session files even when they resolve differently", async (t) => {
+  const root = withRoot(t);
+  const childDir = join(root, "child");
+  mkdirSync(childDir, { recursive: true });
+  const childFile = join(childDir, "session.jsonl");
+  writeFileSync(childFile, "{}\n");
+  // A symlinked spelling of the same file must still match.
+  const linkedDir = join(root, "linked");
+  symlinkSync(childDir, linkedDir);
+
+  seedRun(root, "run-match", {
+    runId: "run-match",
+    mode: "single",
+    state: "running",
+    sessionFile: childFile,
+  });
+  // active=1 only reports runs the extension currently marks live.
+  mkdirSync(join(root, "async-subagent-runs", ".active-runs"), { recursive: true });
+  writeFileSync(join(root, "async-subagent-runs", ".active-runs", "run-match"), "");
+
+  const viaReal = await (await GET(new Request(`http://localhost/api/subagents/external?active=1&paths=${encodeURIComponent(childFile)}`))).json();
+  assert.deepEqual(Object.keys(viaReal.runs), ["run-match"]);
+
+  const viaLink = await (await GET(new Request(`http://localhost/api/subagents/external?active=1&paths=${encodeURIComponent(join(linkedDir, "session.jsonl"))}`))).json();
+  assert.deepEqual(Object.keys(viaLink.runs), ["run-match"], "a symlinked spelling of the same file must still match");
+
+  const unrelated = await (await GET(new Request("http://localhost/api/subagents/external?active=1&paths=/tmp/somewhere-else.jsonl"))).json();
+  assert.deepEqual(unrelated.runs, {});
 });

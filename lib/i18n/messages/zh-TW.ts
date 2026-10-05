@@ -159,6 +159,7 @@ export const zhTWLocale: LocalePlugin = {
     "agentSwitcher.needsAttention": "該子 Agent 需要你關注。",
     "agentSwitcher.noticeCompleted": "{count} 個子 Agent 已完成",
     "agentSwitcher.noticeProblems": "{total} 個中有 {count} 個子 Agent 需要關注",
+    "agentSwitcher.dockGone": "該工作階段已不可用",
     "agentSwitcher.mode.parallel": "平行",
     "agentSwitcher.mode.chain": "鏈式",
     "agentSwitcher.mode.workflow": "工作流程",

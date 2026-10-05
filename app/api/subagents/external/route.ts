@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { realpathSync } from "fs";
 import { isSafeExternalRunId, readActiveExternalRuns, readExternalRuns } from "@/lib/external-subagent-status";
 
 export const dynamic = "force-dynamic";
@@ -26,9 +27,36 @@ export async function GET(request: Request) {
       ? await readActiveExternalRuns()
       : await readExternalRuns(runIds.filter(isSafeExternalRunId).slice(0, 50));
 
-    return NextResponse.json({ runs: Object.fromEntries(runs) }, { headers: { "Cache-Control": "no-store" } });
+    // The caller names the session files it cares about, and the match happens
+    // here: the paths the browser holds and the ones that extension recorded can
+    // differ by symlink resolution (`/tmp` vs `/private/tmp`), and the browser
+    // has no way to canonicalise its own copy.
+    const wanted = (url.searchParams.get("paths") ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 200)
+      .map(canonicalize);
+    const wantedSet = new Set(wanted);
+    const payload: Record<string, unknown> = {};
+    for (const [runId, run] of runs) {
+      const matches = wanted.length === 0
+        || run.sessionFiles.some((file) => wantedSet.has(canonicalize(file)));
+      if (matches) payload[runId] = run;
+    }
+
+    return NextResponse.json({ runs: payload }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     // Best-effort status: the caller keeps whatever it already had.
     return NextResponse.json({ runs: {} }, { headers: { "Cache-Control": "no-store" } });
+  }
+}
+
+/** Real path when the file exists, so two spellings of one path compare equal. */
+function canonicalize(filePath: string): string {
+  try {
+    return realpathSync.native(filePath);
+  } catch {
+    return filePath;
   }
 }

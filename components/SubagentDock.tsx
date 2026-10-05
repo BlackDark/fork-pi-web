@@ -63,7 +63,8 @@ export function SubagentDock({
     [subagents],
   );
   const liveStatuses = useLiveSubagentStatuses(liveIds);
-  const { bySessionPath } = useExternalSubagentRuns();
+  const sessionPaths = useMemo(() => subagents.map((session) => session.path), [subagents]);
+  const { bySessionPath } = useExternalSubagentRuns(sessionPaths);
 
   const externalOf = useCallback(
     (session: SessionInfo) => bySessionPath.get(session.path),

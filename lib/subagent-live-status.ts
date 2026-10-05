@@ -168,6 +168,8 @@ let externalSnapshot: {
 let externalTimer: ReturnType<typeof setInterval> | null = null;
 let externalWatchers = 0;
 let externalInFlight = false;
+/** Session files the watchers care about, set by the newest subscriber. */
+let externalWantedPaths: string[] = [];
 
 function publishExternal(): void {
   externalSnapshot = { byRunId: new Map(externalByRunId), bySessionPath: new Map(externalBySessionPath) };
@@ -179,7 +181,7 @@ async function pollExternal(): Promise<void> {
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   externalInFlight = true;
   try {
-    const { byRunId, bySessionPath } = await fetchExternalRuns();
+    const { byRunId, bySessionPath } = await fetchExternalRuns(undefined, externalWantedPaths);
     for (const [runId, run] of byRunId) {
       // A settled run is recorded and then ignored: its file stops changing.
       if (!run.live && externalByRunId.has(runId)) continue;
@@ -204,7 +206,8 @@ export function getExternalRunSnapshot(): typeof externalSnapshot {
 }
 
 /** Begin following live runs. The poller stops once every caller has let go. */
-export function watchExternalRuns(): () => void {
+export function watchExternalRuns(sessionPaths?: readonly string[]): () => void {
+  if (sessionPaths) externalWantedPaths = [...sessionPaths];
   externalWatchers += 1;
   if (externalTimer === null) {
     void pollExternal();
