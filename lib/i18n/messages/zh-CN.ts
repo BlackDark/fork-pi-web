@@ -162,6 +162,8 @@ export const zhCNLocale: LocalePlugin = {
     "agentSwitcher.noticeCompleted": "{count} 个子 Agent 已完成",
     "agentSwitcher.noticeProblems": "{total} 个中有 {count} 个子 Agent 需要关注",
     "agentSwitcher.dockGone": "该会话已不可用",
+    "agentSwitcher.result": "结果",
+    "agentSwitcher.loadingResult": "正在读取子 Agent 的最后回复…",
     "agentSwitcher.mode.parallel": "并行",
     "agentSwitcher.mode.chain": "链式",
     "agentSwitcher.mode.workflow": "工作流",

@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useExternalSubagentRuns, useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
+import { useSubagentResult } from "@/hooks/useSubagentResult";
 import { isLiveSubagentStatus } from "@/lib/subagent-client";
 import { abortSubagentRun, steerSubagentRun } from "@/lib/subagent-client";
 import { subagentStatusColor } from "@/lib/subagent-family-status";
@@ -103,7 +104,14 @@ export function SubagentDock({
       return b.session.modified.localeCompare(a.session.modified);
     }), [filter, rows]);
 
-  const selected = rows.find((row) => row.session.id === selectedId) ?? null;
+  // Select the child a user most likely wants to read: the one still working,
+  // else the most recent. Without this the detail pane is empty on open.
+  const selected = rows.find((row) => row.session.id === selectedId)
+    ?? rows.find((row) => isLiveSubagentStatus(row.status))
+    ?? rows[0]
+    ?? null;
+  const { text: resultText, loading: resultLoading } = useSubagentResult(selected?.session.id);
+  useEffect(() => { setSelectedId(null); }, [rootSession.id]);
   const selectedIsLive = selected ? isLiveSubagentStatus(selected.status) : false;
 
   const sendSteer = async () => {
@@ -219,6 +227,12 @@ export function SubagentDock({
               </div>
               <p style={{ margin: 0, color: "var(--text-dim)", fontSize: 11 }}>{rootSession.name || rootSession.firstMessage}</p>
               <Field label={t("agentSwitcher.task")} value={relation?.description || selected.session.firstMessage} />
+              {resultText && (
+                <Field label={t("agentSwitcher.result")} value={resultText} />
+              )}
+              {!resultText && resultLoading && (
+                <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("agentSwitcher.loadingResult")}</span>
+              )}
               {(() => {
                 const activity = externalOf(selected.session)?.activity;
                 if (!activity) return null;

@@ -84,15 +84,27 @@ test("a family with no children says so rather than showing a blank panel", () =
   assert.match(render({ subagents: [] }), /No sub-agents in this session/);
 });
 
-test("it offers status filters and prompts for a selection before showing detail", () => {
+test("it offers status filters and opens on the child worth reading", () => {
   const html = render();
   assert.match(html, /All \(3\)/);
-  assert.match(html, />Completed/);
-  // Stop, steer and the transcript hand-off live in the detail pane, which
-  // needs a selected child; without one it says so rather than showing a
-  // half-populated panel.
-  assert.match(html, /Select a sub-agent to see what it is doing/);
-  assert.doesNotMatch(html, /Open transcript/);
+  assert.match(html, />Completed</);
+  // It picks a child by default, so the detail pane is never an empty shell.
+  assert.doesNotMatch(html, /Select a sub-agent to see what it is doing/);
+  assert.match(html, />Running</);
+});
+
+test("shows the child's own reply, read from its transcript", () => {
+  // A child's output lives in exactly one place that is always present: its own
+  // session file. The parent's transcript carries it only for a foreground call
+  // and only in aggregate for a fan-out.
+  assert.match(source, /useSubagentResult\(selected\?\.session\.id\)/);
+  assert.match(source, /agentSwitcher\.result/);
+  assert.match(source, /agentSwitcher\.loadingResult/);
+});
+
+test("opens on the child worth reading rather than an empty pane", () => {
+  assert.match(source, /rows\.find\(\(row\) => isLiveSubagentStatus\(row\.status\)\)/);
+  assert.match(source, /\?\? rows\[0\]/);
 });
 
 test("stop and steer are wired to the run's own session", () => {
