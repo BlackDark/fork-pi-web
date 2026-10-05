@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
@@ -188,6 +189,29 @@ async function cleanupWorktree(
   }
 }
 
+/**
+ * The per-parent directory a child's session file belongs in, or undefined to
+ * keep the flat layout.
+ *
+ * The parent's session id becomes a path segment, and the SDK takes that id
+ * verbatim from the session file header (`sessionId = header.id`) without
+ * validating it. A header carrying a separator or `..` would otherwise place the
+ * child outside the sessions tree, so an id that is not a plain file name falls
+ * back to the flat directory, which is always safe. Crafting such a header
+ * needs local write access to `~/.pi/agent/sessions`, which the agent's own
+ * write tool can grant, so this is a boundary rather than a formality.
+ */
+export function safeChildSessionDir(
+  parentSessionFile: string,
+  parentSessionId: string,
+): string | undefined {
+  if (!SAFE_SESSION_DIR_NAME.test(parentSessionId)) return undefined;
+  return join(dirname(parentSessionFile), parentSessionId);
+}
+
+// One path segment: no separators, no `.`/`..`, no leading dot, nothing empty.
+const SAFE_SESSION_DIR_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 export function createSubagentController(
   dependencies: SubagentRuntimeDependencies,
 ): SubagentController {
@@ -281,9 +305,15 @@ export function createSubagentController(
         settingsManager.getDefaultTools(),
       );
 
-      const sessionManager = isolatedWorktree
-        ? SessionManager.create(childCwd, undefined, { parentSession: parent.sessionFile })
-        : SessionManager.create(parent.cwd, undefined, { parentSession: parent.sessionFile });
+      // Children live in a directory named after their parent instead of the
+      // flat project directory, so a parent that spawned dozens of short-lived
+      // workers does not bury every other session in the catalogue.
+      const childSessionDir = safeChildSessionDir(parent.sessionFile, parentSessionId);
+      const sessionManager = SessionManager.create(
+        isolatedWorktree ? childCwd : parent.cwd,
+        childSessionDir,
+        { parentSession: parent.sessionFile },
+      );
       const createdAt = new Date().toISOString();
       const metadata: SubagentMetadata = {
         version: 1,

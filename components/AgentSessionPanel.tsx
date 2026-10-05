@@ -1,7 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
+import { abortSubagentRun, steerSubagentRun } from "@/lib/subagent-client";
+import { subagentStatusColor } from "@/lib/subagent-family-status";
+import { isLiveSubagentStatus } from "@/lib/subagent-client";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
 
 interface Props {
@@ -10,6 +14,11 @@ interface Props {
   selectedSessionId: string;
   runningSessionIds: ReadonlySet<string>;
   onSelectSession: (session: SessionInfo) => void;
+}
+
+/** A run is stoppable or steerable only while the server still has it live. */
+function isLive(status: SubagentSessionStatus): boolean {
+  return status === "starting" || status === "queued" || status === "running";
 }
 
 function sessionTitle(session: SessionInfo): string {
@@ -29,13 +38,6 @@ function formatRelativeTime(value: string, locale: string): string {
   return formatter.format(Math.round(elapsedHours / 24), "day");
 }
 
-function statusColor(status: SubagentSessionStatus): string {
-  if (status === "running" || status === "starting") return "var(--accent)";
-  if (status === "completed") return "#16a34a";
-  if (status === "failed") return "#dc2626";
-  if (status === "aborted") return "#d97706";
-  return "var(--text-dim)";
-}
 
 function StatusIcon({ status }: { status: SubagentSessionStatus }) {
   if (status === "running" || status === "starting") {
@@ -72,81 +74,173 @@ function AgentRow({
   main,
   selected,
   running,
+  status,
   onSelect,
+  onStop,
 }: {
   session: SessionInfo;
   main?: boolean;
   selected: boolean;
   running: boolean;
+  status: SubagentSessionStatus;
   onSelect: () => void;
+  onStop?: () => void;
 }) {
   const { locale, t } = useI18n();
+  const [steering, setSteering] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const relation = session.relation?.kind === "subagent" ? session.relation : null;
-  const status: SubagentSessionStatus = running ? "running" : relation?.status ?? "completed";
   const primary = main ? t("agentSwitcher.main") : relation?.description || sessionTitle(session);
   const secondary = main
     ? sessionTitle(session)
     : `${relation?.profile ?? t("agentSwitcher.subagent")} · ${formatRelativeTime(session.modified, locale)}`;
+  const canControl = !main && isLive(status);
 
-  return (
+  const sendSteer = async () => {
+    const message = draft.trim();
+    if (!message) return;
+    setError(null);
+    try {
+      await steerSubagentRun(session.id, message);
+      setDraft("");
+      setSteering(false);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+
+
+  const stop = async () => {
+    setError(null);
+    try {
+      await onStop?.();
+    } catch (failure) {
+      // A run can settle between the render and the click; say so instead of
+      // dropping an unhandled rejection.
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+
+  const controlButton = (
+    label: string, onClick: () => void, glyph: React.ReactNode, danger = false,
+  ) => (
     <button
       type="button"
-      role="option"
-      aria-selected={selected}
-      onClick={onSelect}
+      title={label}
+      aria-label={label}
+      onClick={(event) => { event.stopPropagation(); onClick(); }}
       style={{
-        width: "100%",
-        minHeight: 56,
-        display: "grid",
-        gridTemplateColumns: "28px minmax(0, 1fr) auto",
-        alignItems: "center",
-        gap: 9,
-        padding: "7px 12px",
-        border: "none",
-        borderBottom: "1px solid var(--border)",
-        borderLeft: selected ? "2px solid var(--accent)" : "2px solid transparent",
-        background: selected ? "var(--bg-selected)" : "transparent",
-        color: "var(--text)",
-        cursor: "pointer",
-        textAlign: "left",
-      }}
-      onMouseEnter={(event) => {
-        if (!selected) event.currentTarget.style.background = "var(--bg-hover)";
-      }}
-      onMouseLeave={(event) => {
-        if (!selected) event.currentTarget.style.background = "transparent";
+        display: "grid", placeItems: "center", width: 24, height: 24, padding: 0,
+        border: "1px solid var(--border)", borderRadius: 6,
+        background: "var(--bg)", color: danger ? "#dc2626" : "var(--text-muted)", cursor: "pointer",
       }}
     >
-      <span style={{ width: 28, height: 28, display: "grid", placeItems: "center", color: main ? "var(--text-muted)" : "var(--accent)" }}>
-        {main ? (
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" />
-          </svg>
-        ) : (
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
-          </svg>
-        )}
-      </span>
-      <span style={{ minWidth: 0 }}>
-        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: selected ? 600 : 500 }} title={primary}>
-          {primary}
-        </span>
-        <span style={{ display: "block", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 11 }} title={secondary}>
-          {secondary}
-        </span>
-      </span>
-      <span style={{ display: "flex", alignItems: "center", gap: 6, color: main && !running ? "var(--text-dim)" : statusColor(status), fontSize: 11, whiteSpace: "nowrap" }}>
-        {main && !running ? (
-          selected ? t("agentSwitcher.current") : null
-        ) : (
-          <>
-            <StatusIcon status={status} />
-            <span>{t(`agentSwitcher.status.${status}`)}</span>
-          </>
-        )}
-      </span>
+      {glyph}
     </button>
+  );
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: selected ? "var(--bg-selected)" : "transparent" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", alignItems: "center" }}>
+        <button
+          type="button"
+          aria-current={selected ? "true" : undefined}
+          onClick={onSelect}
+          style={{
+            minHeight: 56,
+            display: "grid",
+            gridTemplateColumns: "28px minmax(0, 1fr) auto",
+            alignItems: "center",
+            gap: 9,
+            padding: "7px 12px",
+            border: "none",
+            borderLeft: selected ? "2px solid var(--accent)" : "2px solid transparent",
+            background: "transparent",
+            color: "var(--text)",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+          onMouseEnter={(event) => {
+            if (!selected) event.currentTarget.style.background = "var(--bg-hover)";
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.background = "transparent";
+          }}
+        >
+          <span style={{ width: 28, height: 28, display: "grid", placeItems: "center", color: main ? "var(--text-muted)" : "var(--accent)" }}>
+            {main ? (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" />
+              </svg>
+            ) : (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
+              </svg>
+            )}
+          </span>
+          <span style={{ minWidth: 0 }}>
+            <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: selected ? 600 : 500 }} title={primary}>
+              {primary}
+            </span>
+            <span style={{ display: "block", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 11 }} title={secondary}>
+              {secondary}
+            </span>
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6, color: main && !running ? "var(--text-dim)" : subagentStatusColor(status), fontSize: 11, whiteSpace: "nowrap" }}>
+            {main && !running ? (
+              selected ? t("agentSwitcher.current") : null
+            ) : (
+              <>
+                <StatusIcon status={status} />
+                <span>{t(`agentSwitcher.status.${status}`)}</span>
+              </>
+            )}
+          </span>
+        </button>
+        {canControl && (
+          <div style={{ display: "flex", gap: 4, paddingRight: 10 }}>
+            {controlButton(
+              steering ? t("agentSwitcher.steerCancel") : t("agentSwitcher.steer"),
+              () => { setSteering((value) => !value); setError(null); },
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M4 20h16M4 20l4-4M4 20l2-6M20 4l-4 4M20 4l-2 6M20 4H9" />
+              </svg>,
+            )}
+            {onStop && controlButton(
+              t("agentSwitcher.stop"),
+              () => { void stop(); },
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>,
+              true,
+            )}
+          </div>
+        )}
+      </div>
+      {canControl && steering && (
+        <div style={{ padding: "0 12px 9px 49px" }}>
+          <input
+            type="text"
+            value={draft}
+            autoFocus
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); void sendSteer(); }
+              if (event.key === "Escape") { event.preventDefault(); setSteering(false); }
+            }}
+            placeholder={t("agentSwitcher.steerPlaceholder")}
+            aria-label={t("agentSwitcher.steerPlaceholder")}
+            style={{
+              width: "100%", height: 30, padding: "0 9px",
+              border: "1px solid var(--border)", borderRadius: 6,
+              background: "var(--bg)", color: "var(--text)", fontSize: 12, outline: "none",
+            }}
+          />
+          {error && <p style={{ margin: "6px 0 0", color: "#dc2626", fontSize: 11 }}>{error}</p>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -168,10 +262,30 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
       })
     : sortedSubagents;
   const runningCount = subagents.filter((session) => runningSessionIds.has(session.id)).length;
+  const statuses = useLiveSubagentStatuses(
+    subagents.filter((session) => isLiveSubagentStatus(
+      session.relation?.kind === "subagent" ? session.relation.status : "completed",
+    )).map((session) => session.id),
+  );
+  const statusOf = useCallback((session: SessionInfo): SubagentSessionStatus => {
+    if (runningSessionIds.has(session.id)) return "running";
+    if (session.relation?.kind !== "subagent") return "completed";
+    // The catalogue says what the session file recorded; the shared poller says
+    // what the server still has, which is what settles a run whose process died.
+    return statuses.get(session.id) ?? session.relation.status;
+  }, [runningSessionIds, statuses]);
+  const [stoppingAll, setStoppingAll] = useState(false);
+  const liveSubagents = visibleSubagents.filter((session) => isLive(statusOf(session)));
+  const stopAll = async () => {
+    setStoppingAll(true);
+    // Fire every abort and settle once; one failure must not strand the rest.
+    await Promise.allSettled(liveSubagents.map((session) => abortSubagentRun(session.id)));
+    setStoppingAll(false);
+  };
 
   return (
     <div
-      role="listbox"
+      role="group"
       aria-label={t("agentSwitcher.title")}
       style={{
         background: "var(--bg-panel)",
@@ -193,6 +307,22 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
             <span style={{ marginLeft: "auto", color: "var(--accent)", fontSize: 11 }}>
               {t("agentSwitcher.runningCount", { count: runningCount })}
             </span>
+          )}
+          {liveSubagents.length > 1 && (
+            <button
+              type="button"
+              onClick={() => { void stopAll(); }}
+              disabled={stoppingAll}
+              style={{
+                marginLeft: runningCount > 0 ? 0 : "auto",
+                height: 24, padding: "0 9px",
+                border: "1px solid var(--border)", borderRadius: 6,
+                background: "var(--bg)", color: stoppingAll ? "var(--text-dim)" : "#dc2626",
+                fontSize: 11, cursor: stoppingAll ? "default" : "pointer",
+              }}
+            >
+              {t("agentSwitcher.stopAll", { count: liveSubagents.length })}
+            </button>
           )}
         </div>
         {subagents.length > 8 && (
@@ -217,6 +347,7 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
             main
             selected={rootSession.id === selectedSessionId}
             running={runningSessionIds.has(rootSession.id)}
+            status={statusOf(rootSession)}
             onSelect={() => onSelectSession(rootSession)}
           />
           {visibleSubagents.map((session) => (
@@ -225,7 +356,9 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
               session={session}
               selected={session.id === selectedSessionId}
               running={runningSessionIds.has(session.id)}
+              status={statusOf(session)}
               onSelect={() => onSelectSession(session)}
+              onStop={() => abortSubagentRun(session.id)}
             />
           ))}
           {visibleSubagents.length === 0 && (

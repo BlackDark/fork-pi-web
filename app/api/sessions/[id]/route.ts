@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync } from "fs";
+import { basename, dirname, join } from "path";
+import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
 import {
   attachSessionProjectInfo,
   listAllSessions,
@@ -197,6 +198,16 @@ export async function PATCH(
 }
 
 // DELETE /api/sessions/[id]
+/** The header's parent link, or undefined for a session that has no file yet. */
+function readParentSessionPath(filePath: string): string | undefined {
+  try {
+    return readSessionHeader(filePath)?.parentSession;
+  } catch {
+    // An unpersisted session has no file to read; nothing to prune either.
+    return undefined;
+  }
+}
+
 export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -288,14 +299,22 @@ export async function DELETE(
     }
     const deletedPathKeys = new Set([...deletedPaths.values()].map((path) => sessionPathKey(path)));
 
-    // Re-attach all direct children to this session's parent (cascade re-parent)
-    // Scan sibling files in the same directory
+    // Re-attach all direct children to this session's parent (cascade re-parent).
+    // Subagent children live in a per-parent subdirectory, so scan both this
+    // session's own directory and that subdirectory.
     try {
-      const files = readdirSync(dir).filter(
-        (file) => file.endsWith(".jsonl") && sessionPathKey(join(dir, file)) !== targetPathKey,
-      );
-      for (const file of files) {
-        const childPath = join(dir, file);
+      const candidateFiles = [...new Set([dir, join(dir, id)].flatMap((scanDir) => {
+        let entries: string[];
+        try {
+          entries = readdirSync(scanDir);
+        } catch {
+          return [];
+        }
+        return entries
+          .filter((file) => file.endsWith(".jsonl"))
+          .map((file) => join(scanDir, file));
+      }))].filter((childPath) => sessionPathKey(childPath) !== targetPathKey);
+      for (const childPath of candidateFiles) {
         if (deletedPathKeys.has(sessionPathKey(childPath))) continue;
         try {
           const content = readFileSync(childPath, "utf8");
@@ -333,7 +352,9 @@ export async function DELETE(
                 break;
               }
             }
-            writeFileSync(childPath, lines.join("\n"));
+            // A child header can be large; rewrite it atomically so a crash
+            // mid-write cannot leave a surviving session file unparseable.
+            writePrivateFileAtomicSync(childPath, lines.join("\n"));
           }
         } catch { /* skip malformed */ }
       }
@@ -347,10 +368,28 @@ export async function DELETE(
     try { await abortSubagent(id); } catch { /* ordinary session */ }
     await getRpcSession(id)?.shutdown();
     for (const [deletedId, deletedPath] of deletedPaths) {
+      // Prune only a per-parent child directory, which is named after its
+      // parent and holds nothing but that parent's children. A top-level
+      // session's directory is a project directory, and a flat fork shares one.
+      // Checking that the directory is literally named after the parent is the
+      // invariant, rather than trusting that the session merely had a parent.
+      const parentSessionPath = readParentSessionPath(deletedPath);
+      const dir = dirname(deletedPath);
+      const isPerParentDir = typeof parentSessionPath === "string"
+        && basename(parentSessionPath).replace(/\.jsonl$/, "") === basename(dir);
       try {
         unlinkSync(deletedPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (isPerParentDir) {
+        // ENOTEMPTY means siblings remain; ENOENT that it is already gone.
+        try {
+          rmdirSync(dir);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOTEMPTY" && code !== "ENOENT" && code !== "ENOTDIR") throw error;
+        }
       }
       invalidateSessionPathCache(deletedId);
       invalidateSessionManagerCache(deletedPath);

@@ -2,7 +2,7 @@ import {
   SessionManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { closeSync, type Dirent, fstatSync, openSync, readSync, statSync } from "fs";
+import { closeSync, type Dirent, existsSync, fstatSync, openSync, readSync, statSync } from "fs";
 import { readdir } from "fs/promises";
 import { isAbsolute, join, normalize as normalizePath, relative, resolve as resolvePath, sep } from "path";
 import type { AgentMessage, ImageContent, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
@@ -13,7 +13,7 @@ import { sessionPathKey } from "./session-path";
 import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-result-images";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
-import { listSessionsIncremental, type ScannedSessionInfo } from "./session-list-scanner";
+import { listSessionsIncremental, MAX_SESSION_DIR_DEPTH, type ScannedSessionInfo } from "./session-list-scanner";
 
 export { getAgentDir };
 
@@ -159,8 +159,26 @@ export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise
     projectByCwd.set(cwd, await resolveProject(cwd));
   }));
 
+  // A sub-agent that ran in a temporary isolation worktree leaves a cwd that no
+  // longer exists once the run ends, and the worktree is not named the way
+  // inferRemovedWorktree recognises. The child's own project is then
+  // unresolvable, so it inherits the project of the parent it belongs to. That
+  // is the truth about where the work happened, and it keeps a finished run from
+  // showing up as its own broken project.
+  const resolvedProjectOf = (session: SessionInfo): ProjectInfo | undefined => {
+    const own = session.cwd ? projectByCwd.get(session.cwd) : undefined;
+    if (own && existsSync(session.cwd)) return own;
+    const parentId = session.parentSessionId;
+    if (!parentId) return own;
+    const parent = sessions.find((candidate) => candidate.id === parentId);
+    if (!parent?.cwd || parent.cwd === session.cwd) return own;
+    const parentProject = projectByCwd.get(parent.cwd);
+    if (!parentProject || !existsSync(parent.cwd)) return own;
+    return { ...parentProject, isWorktree: own?.isWorktree ?? parentProject.isWorktree };
+  };
+
   return sessions.map((session) => {
-    const project = session.cwd ? projectByCwd.get(session.cwd) : undefined;
+    const project = resolvedProjectOf(session);
     const projectRoot = project?.projectRoot ?? session.cwd;
     return {
       ...session,
@@ -202,7 +220,6 @@ function resolveScannedSessionRelation(
     return { originSessionId, subagent: null };
   }
 }
-
 function mapScannedSession(
   scanned: ScannedSessionInfo,
   pathToId: Map<string, string>,
@@ -226,9 +243,18 @@ function mapScannedSession(
     parentSessionId: originSessionId,
     ...(subagent
       ? { relation: { kind: "subagent" as const, parentSessionId: subagent.parentSessionId, profile: subagent.profile, description: subagent.description, status: subagent.status } }
-      : scanned.parentSessionPath
-        ? { relation: { kind: "fork" as const, ...(originSessionId ? { originSessionId } : {}) } }
-        : {}),
+      : scanned.parentByDirectory && originSessionId
+        // A child in a folder named for its parent, with no pi-web lifecycle
+        // entry: another runtime spawned it. It is still that parent's child,
+        // so it belongs in the family rather than at the top level the way a
+        // fork does. Its own status stays unknown until the server reports one.
+        // Without a resolvable parent it must stay visible as a fork instead:
+        // family grouping drops a child whose parent is absent, so claiming the
+        // relation here would make the session disappear.
+        ? { relation: { kind: "subagent" as const, parentSessionId: originSessionId, profile: "", description: scanned.firstMessage, status: "completed" as const } }
+        : scanned.parentSessionPath
+          ? { relation: { kind: "fork" as const, ...(originSessionId ? { originSessionId } : {}) } }
+          : {}),
     transient: false,
     ...(detailsPending ? { detailsPending: true } : {}),
   };
@@ -340,8 +366,8 @@ async function findSessionPathById(sessionId: string): Promise<string | null> {
   // authoritative so future layouts and malformed files use the full fallback.
   if (!SESSION_ID_PATTERN.test(sessionId)) return null;
 
-  let projectDirs: Dirent[];
   const sessionsDir = resolvePath(defaultSessionsDir());
+  let projectDirs: Dirent[];
   try {
     projectDirs = await readdir(sessionsDir, { withFileTypes: true });
   } catch {
@@ -350,27 +376,27 @@ async function findSessionPathById(sessionId: string): Promise<string | null> {
 
   const suffix = `_${sessionId}.jsonl`;
   let match: string | undefined;
-  for (const projectDir of projectDirs) {
-    if (!projectDir.isDirectory() && !projectDir.isSymbolicLink()) continue;
-    const projectPath = resolvePathWithinDefaultSessions(
-      join(sessionsDir, projectDir.name),
-      sessionsDir,
-    );
-    if (!projectPath) continue;
-
-    let files: string[];
+  let duplicate = false;
+  // Subagent children sit in a directory named after their parent, so a project
+  // directory is walked to a bounded depth rather than read one level deep.
+  // Only real directories are descended: the per-parent subdirectories are
+  // created by SessionManager, so following symlinks would only widen the
+  // sessions-dir trust boundary and multiply the readdir fan-out.
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries: Dirent[];
     try {
-      files = await readdir(projectPath);
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      continue;
+      // unreadable dir: same skip-as-absent semantics as the scanner
+      return;
     }
-
-    for (const file of files) {
-      if (!file.endsWith(suffix)) continue;
-      const candidate = resolvePathWithinDefaultSessions(
-        join(projectPath, file),
-        sessionsDir,
-      );
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (depth < MAX_SESSION_DIR_DEPTH) await walk(join(dir, entry.name), depth + 1);
+        continue;
+      }
+      if (!entry.name.endsWith(suffix)) continue;
+      const candidate = resolvePathWithinDefaultSessions(join(dir, entry.name), sessionsDir);
       if (!candidate) continue;
       try {
         if (readSessionHeader(candidate)?.id !== sessionId) continue;
@@ -379,9 +405,23 @@ async function findSessionPathById(sessionId: string): Promise<string | null> {
       }
       // Do not choose between duplicate candidates; retain the existing
       // catalogue fallback for its current resolution semantics.
-      if (match && match !== candidate) return null;
+      if (match && match !== candidate) {
+        duplicate = true;
+        return;
+      }
       match = candidate;
     }
+  };
+
+  for (const projectDir of projectDirs) {
+    if (!projectDir.isDirectory() && !projectDir.isSymbolicLink()) continue;
+    const projectPath = resolvePathWithinDefaultSessions(
+      join(sessionsDir, projectDir.name),
+      sessionsDir,
+    );
+    if (!projectPath) continue;
+    await walk(projectPath, 1);
+    if (duplicate) return null;
   }
 
   return match ?? null;

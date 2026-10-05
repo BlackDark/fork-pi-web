@@ -8,13 +8,13 @@ import { ChatWindow } from "./ChatWindow";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
+import { SubagentDock } from "./SubagentDock";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
 import { SettingsPanel, SettingsSectionIcon } from "./SettingsPanel";
 import { ProjectTrustDialog, type ProjectTrustFailure } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
-import { AgentSessionPanel } from "./AgentSessionPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
 import { useTheme } from "@/hooks/useTheme";
@@ -71,7 +71,6 @@ type AutoNameStatus =
   | { kind: "error"; message: string };
 
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
-const AGENT_PANEL_WIDTH = 420;
 
 function parkedNewSessionDraftKey(cwd: string): string {
   return `parked-new:${cwd}`;
@@ -448,14 +447,6 @@ export function AppShell() {
     if (!activeTopPanel || !topBarRef.current) return;
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
-      if (activeTopPanel === "agents") {
-        setTopPanelPos({
-          top: topBarRect.bottom,
-          left: topBarRect.left,
-          width: Math.min(AGENT_PANEL_WIDTH, topBarRect.width),
-        });
-        return;
-      }
       setTopPanelPos({ top: topBarRect.bottom, left: topBarRect.left, width: topBarRect.width });
     };
     update();
@@ -468,14 +459,37 @@ export function AppShell() {
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+  // Sub-agents dock beside files and terminals rather than floating over the
+  // chat: watching a fan-out must not take the conversation away.
+  const [agentsDockSessionId, setAgentsDockSessionId] = useState<string | null>(null);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
-  const panelTabs: Tab[] = [...fileTabs, ...terminalTabs.map((tab) => ({
-    id: tab.id,
-    label: getFileName(tab.cwd) || tab.cwd,
-    filePath: tab.cwd,
-    kind: "terminal" as const,
-    closing: Boolean(tab.closing),
-  }))];
+  const agentsDockTabId = agentsDockSessionId ? `agents:${agentsDockSessionId}` : null;
+  const agentsDockFamily = useMemo(
+    () => (agentsDockSessionId ? getSessionFamily(sessionsWithSelection, agentsDockSessionId) : null),
+    [agentsDockSessionId, sessionsWithSelection],
+  );
+  const panelTabs: Tab[] = [
+    ...fileTabs,
+    ...terminalTabs.map((tab) => ({
+      id: tab.id,
+      label: getFileName(tab.cwd) || tab.cwd,
+      filePath: tab.cwd,
+      kind: "terminal" as const,
+      closing: Boolean(tab.closing),
+    })),
+    ...(agentsDockTabId ? [{
+      id: agentsDockTabId,
+      label: translate("agentSwitcher.dockLabel"),
+      filePath: "",
+      kind: "agents" as const,
+    }] : []),
+  ];
+  const agentsDockActive = Boolean(agentsDockTabId) && activeFileTabId === agentsDockTabId;
+  const openAgentsDock = useCallback((sessionId: string) => {
+    setAgentsDockSessionId(sessionId);
+    setActiveFileTabId(`agents:${sessionId}`);
+    setRightPanelOpen(true);
+  }, []);
 
   useEffect(() => {
     try {
@@ -1085,9 +1099,18 @@ export function AppShell() {
     if (!replacement && !remaining.length && !fileTabs.length) setRightPanelOpen(false);
   };
 
+  const handleCloseAgentsDock = useCallback(() => {
+    setAgentsDockSessionId(null);
+  }, []);
+
   const handleCloseFileTab = useCallback((tabId: string) => {
     if (terminalTabs.some((tab) => tab.id === tabId)) {
       setTerminalTabs((tabs) => tabs.map((tab) => tab.id === tabId && !tab.closing ? { ...tab, closing: "close" } : tab));
+      return;
+    }
+    if (tabId === agentsDockTabId) {
+      handleCloseAgentsDock();
+      setActiveFileTabId((cur) => (cur !== tabId ? cur : fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null));
       return;
     }
     setFileTabs((prev) => {
@@ -1100,7 +1123,7 @@ export function AppShell() {
       const remaining = fileTabs.filter((t) => t.id !== tabId);
       return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
     });
-  }, [fileTabs, terminalTabs]);
+  }, [agentsDockTabId, fileTabs, handleCloseAgentsDock, terminalTabs]);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -1188,7 +1211,12 @@ export function AppShell() {
     if (cwd === projectTrustCwd) setProjectTrust(status);
   }, [projectTrustCwd]);
 
-  const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
+  // The active tab can be a file, a terminal or the sub-agent dock, so it has to
+  // be resolved against every dock tab rather than only the file ones. Reading
+  // it from fileTabs alone made the dock's own tab resolve to null, which fell
+  // through to the "no file open" placeholder.
+  const activePanelTab = panelTabs.find((tab) => tab.id === activeFileTabId) ?? null;
+  const activeFileTab = activePanelTab?.kind === "agents" ? null : activePanelTab;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - Pi Web` : "Pi Web";
 
@@ -1208,6 +1236,9 @@ export function AppShell() {
       <SessionSidebar
         selectedSessionId={selectedSession?.id ?? null}
         onSelectSession={handleSelectSession}
+        // The chip names the family it belongs to, so clicking a second chip
+        // switches the dock rather than toggling it closed.
+        onOpenAgents={openAgentsDock}
         onNewSession={handleNewSession}
         initialSessionId={initialSessionId}
         skipInitialProjectSelection={initialNavigation.requestedCwd !== null}
@@ -1473,20 +1504,20 @@ export function AppShell() {
         {hasSubagentSessions && (
           <button
             type="button"
-            onClick={() => toggleTopPanel("agents", mobile)}
+            onClick={() => { if (selectedSession) openAgentsDock(selectedSession.id); }}
             title={translate("agentSwitcher.title")}
             aria-label={translate("agentSwitcher.title")}
-            aria-pressed={activeTopPanel === "agents"}
+            aria-pressed={agentsDockActive}
             style={{
               position: "relative",
               display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
               width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
               height: "100%", padding: mobile ? 0 : "0 12px",
-              background: activeTopPanel === "agents" ? "var(--bg-selected)" : "none",
+              background: agentsDockActive ? "var(--bg-selected)" : "none",
               border: "none",
-              borderTop: activeTopPanel === "agents" ? "2px solid var(--accent)" : "2px solid transparent",
+              borderTop: agentsDockActive ? "2px solid var(--accent)" : "2px solid transparent",
               borderRight: "1px solid var(--border)",
-              color: activeTopPanel === "agents" ? "var(--text)" : "var(--text-muted)",
+              color: agentsDockActive ? "var(--text)" : "var(--text-muted)",
               cursor: "pointer", flexShrink: 0, fontSize: 11, whiteSpace: "nowrap",
               transition: "color 0.1s, background 0.1s",
             }}
@@ -2097,15 +2128,6 @@ export function AppShell() {
               overflowY: "auto",
               zIndex: 500,
             }}>
-              {activeTopPanel === "agents" && activeSessionFamily && selectedSession && (
-                <AgentSessionPanel
-                  rootSession={activeSessionFamily.root}
-                  subagents={activeSessionFamily.subagents}
-                  selectedSessionId={selectedSession.id}
-                  runningSessionIds={runningSessionIds}
-                  onSelectSession={handleSelectSession}
-                />
-              )}
               {activeTopPanel === "system" && (
                 <SystemPromptPanel
                   loading={systemInfoLoading}
@@ -2525,11 +2547,28 @@ export function AppShell() {
                 { sourceSessionId: activeFileTab.sourceSessionId, page },
               )}
             />
-          ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) ? (
+          ) : !terminalTabs.some((tab) => tab.id === activeFileTabId)
+            && activePanelTab?.kind !== "agents" ? (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
                {translate("files.noneOpen")}
             </div>
           ) : null}
+          {activePanelTab?.kind === "agents" && agentsDockFamily && (
+            <div style={{ width: "100%", height: "100%" }}>
+              <SubagentDock
+                key={activePanelTab.id}
+                rootSession={agentsDockFamily.root}
+                subagents={agentsDockFamily.subagents}
+                runningSessionIds={runningSessionIds}
+                onSelectSession={handleSelectSession}
+              />
+            </div>
+          )}
+          {activePanelTab?.kind === "agents" && !agentsDockFamily && (
+            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
+              {translate("agentSwitcher.dockGone")}
+            </div>
+          )}
           {terminalTabs.map((tab) => (
             <div key={tab.id} hidden={tab.id !== activeFileTabId} style={{ width: "100%", height: "100%" }}>
               <TerminalPanel

@@ -17,7 +17,9 @@ import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thin
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
-import type { SubagentToolDetails } from "@/lib/subagent-extension";
+import { subagentNoticesFromDetails, subagentRunsFromToolResult, type SubagentRunView } from "@/lib/subagent-tool-adapter";
+import { subagentStatusColor } from "@/lib/subagent-family-status";
+import { SubagentActivity } from "./SubagentActivity";
 import { CODEMODE_TOOL_NAME, codemodeCalls, codemodeScript, codemodeScriptPreview, stripCodemodeHeader } from "@/lib/codemode-view";
 import { CodemodeCallList } from "./CodemodeToolView";
 import { mcpToolLabel, prettyMcpResultText } from "@/lib/mcp-tool-display";
@@ -1106,23 +1108,32 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
   );
 }
 
-function isSubagentToolDetails(value: unknown): value is SubagentToolDetails {
-  if (!value || typeof value !== "object") return false;
-  const details = value as Partial<SubagentToolDetails>;
-  return details.kind === "pi-web-subagent" && typeof details.sessionId === "string";
+/** Worst-wins across a fan-out, so the group block is toned by its worst child. */
+function worstStatus(statuses: readonly SubagentRunView["status"][]): SubagentRunView["status"] {
+  const order: SubagentRunView["status"][] = ["failed", "aborted", "interrupted", "running", "starting", "queued", "completed"];
+  return order.find((status) => statuses.includes(status)) ?? "completed";
 }
 
 function ToolCallBlock({ block, result, duration, onOpenSession }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(() => isToolCallExpanded(block.toolCallId));
+  // A fan-out has one expand state per child, keyed by position because the
+  // runtime's per-child ids are not stable across re-renders of history.
+  const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
+  const [groupOutputExpanded, setGroupOutputExpanded] = useState(false);
   const toggleExpanded = () => {
     const next = !expanded;
     setToolCallExpanded(block.toolCallId, next);
     setExpanded(next);
   };
+  const toggleRow = (position: number) => {
+    setExpandedRows((previous) => ({ ...previous, [position]: !previous[position] }));
+  };
   const inputStr = getToolCallInputText(block);
   const isStreamingInput = block.rawInput !== undefined;
   const isEditTool = isEditToolName(block.toolName);
+  const subagentRuns = subagentRunsFromToolResult(block.toolName, result?.details);
+  const subagentTask = typeof block.input?.task === "string" ? block.input.task : undefined;
   const resultDiff = result && !result.isError ? getResultDiff(result) : null;
   const patchFiles = getApplyPatchFiles(block, result);
   const patchLabel = isApplyPatchToolName(block.toolName)
@@ -1148,9 +1159,58 @@ function ToolCallBlock({ block, result, duration, onOpenSession }: { block: Tool
   const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
   const isError = (result?.isError ?? false)
     || (isApplyPatchToolName(block.toolName) && applyPatchResultHasFailures(result?.details));
-  const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
   const codemodeCallCount = codemode ? codemode.calls.length + codemode.omitted : 0;
 
+  // A sub-agent run gets its own row: its status is the useful part, and a
+  // fan-out of a dozen of them would otherwise bury the conversation in cards.
+  if (subagentRuns) {
+    // One tool call can carry a whole fan-out, so a dozen children render as a
+    // dozen rows in one place rather than interleaving with the conversation.
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {subagentRuns.map((run, position) => (
+          <SubagentActivity
+            key={run.key}
+            run={run}
+            task={position === 0 ? subagentTask : undefined}
+            // One child: the call's output belongs to that child. Several: it
+            // is the aggregate, so it is shown once under the group rather than
+            // attached to whichever row happened to be last.
+            resultText={subagentRuns.length === 1 ? resultText : null}
+            expanded={expandedRows[position] ?? (position === 0 && expanded)}
+            onToggle={() => toggleRow(position)}
+            onOpenSession={onOpenSession}
+          />
+        ))}
+        {subagentRuns.length > 1 && groupOutputExpanded && resultText?.trim() && (
+          <pre
+            style={{
+              margin: 0, padding: "8px 10px", maxHeight: 320, overflow: "auto",
+              background: "var(--bg-subtle)", border: `1px solid ${subagentStatusColor(worstStatus(subagentRuns.map((run) => run.status)))}26`, borderRadius: 7,
+              color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5,
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}
+          >
+            {resultText}
+          </pre>
+        )}
+        {subagentRuns.length > 1 && (
+          <button
+            type="button"
+            onClick={() => setGroupOutputExpanded((value) => !value)}
+            aria-expanded={groupOutputExpanded}
+            style={{
+              alignSelf: "flex-start", height: 24, padding: "0 9px",
+              border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)",
+              color: "var(--text-muted)", fontSize: 11, cursor: "pointer",
+            }}
+          >
+            {groupOutputExpanded ? t("subagent.hideOutput") : t("subagent.showOutput")}
+          </button>
+        )}
+      </div>
+    );
+  }
   return (
     <div
       style={{
@@ -1208,17 +1268,6 @@ function ToolCallBlock({ block, result, duration, onOpenSession }: { block: Tool
             <polyline points="2 3.5 5 6.5 8 3.5" />
           </svg>
         </button>
-        {subagent && onOpenSession && (
-          <button
-            type="button"
-            onClick={() => onOpenSession(subagent.sessionId)}
-            title={t("subagent.open")}
-            aria-label={t("subagent.open")}
-            style={{ width: 32, display: "grid", placeItems: "center", border: "none", borderLeft: "1px solid var(--border)", background: "none", color: "var(--text-muted)", cursor: "pointer", flexShrink: 0 }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
-          </button>
-        )}
       </div>
 
       {/* ── Expanded: input args (only when no richer view exists); a codemode script in place of its JSON ── */}
@@ -1712,7 +1761,78 @@ function CompactionFileList({ title, files }: { title: string; files: string[] }
   );
 }
 
-function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
+/** Completion notices another sub-agent extension posts into this transcript. */
+function SubagentNoticeGroup({ message }: { message: CustomMessage }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const notices = useMemo(() => subagentNoticesFromDetails(message.details), [message.details]);
+  if (!notices) return null;
+
+  const completed = notices.filter((notice) => notice.status === "completed").length;
+  const problems = notices.length - completed;
+  const headline = problems > 0
+    ? t("agentSwitcher.noticeProblems", { count: problems, total: notices.length })
+    : t("agentSwitcher.noticeCompleted", { count: notices.length });
+  const tone = problems > 0 ? "#dc2626" : "#16a34a";
+
+  return (
+    <div style={{ marginBottom: 16, border: `1px solid ${tone}33`, borderRadius: 8, background: `${tone}0a`, fontSize: 12 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 8,
+          padding: "7px 10px", background: "none", border: "none", color: "var(--text)", cursor: "pointer", textAlign: "left",
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={tone} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m5 13 4 4L19 7" />
+        </svg>
+        <strong style={{ fontSize: 12, color: tone }}>{headline}</strong>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: "auto", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+          <polyline points="2 3.5 5 6.5 8 3.5" />
+        </svg>
+      </button>
+      {expanded && (
+        <div style={{ borderTop: `1px solid ${tone}26` }}>
+          {notices.map((notice) => (
+            <div key={notice.key} style={{ padding: "7px 10px", borderBottom: "1px solid var(--border)", display: "grid", gap: 3 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 11, color: subagentStatusColor(notice.status) }}>{notice.agent}</span>
+                <span style={{ fontSize: 11, color: subagentStatusColor(notice.status) }}>{t(`agentSwitcher.status.${notice.status}`)}</span>
+                {notice.background && (
+                  <span style={{ fontSize: 10, color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 8, padding: "0 5px" }}>{t("agentSwitcher.background")}</span>
+                )}
+                {notice.durationMs !== undefined && (
+                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>
+                    {Math.round(notice.durationMs / 1000)}s
+                  </span>
+                )}
+              </div>
+              {notice.task && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{notice.task}</span>}
+              {notice.resultPreview && (
+                <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{notice.resultPreview}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomMessageView(props: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
+  const { message } = props;
+  // A completion notice carries structured rows the generic card would bury.
+  // Dispatched from a wrapper so this component's hooks stay unconditional.
+  if (message.customType === "subagent-notify" && subagentNoticesFromDetails(message.details)) {
+    return <SubagentNoticeGroup message={message} />;
+  }
+  return <GenericCustomMessageView {...props} />;
+}
+
+function GenericCustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
   const { t } = useI18n();
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);

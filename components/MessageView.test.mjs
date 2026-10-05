@@ -128,7 +128,7 @@ test("keeps streamed tool input out of collapsed markup while counting it", () =
   assert.equal(getTokenEstimateText(block), block.rawInput);
 });
 
-test("renders subagents as standard tool calls with only an extra session button", () => {
+test("renders a sub-agent as an activity row leading with its status, not a tool card", () => {
   const block = {
     type: "toolCall",
     toolCallId: "call-agent-1",
@@ -151,6 +151,7 @@ test("renders subagents as standard tool calls with only an extra session button
       status: "completed",
       runInBackground: false,
       createdAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:12.000Z",
     },
   };
   const html = renderMessage({
@@ -163,12 +164,15 @@ test("renders subagents as standard tool calls with only an extra session button
     onOpenSession() {},
   });
 
-  assert.match(html, /border:1px solid rgba\(34,197,94,0\.25\)/);
-  assert.match(html, />Agent</);
+  // Status leads, and the raw tool name / JSON are gone: a fan-out of these
+  // must not read like a dozen generic tool cards.
+  assert.match(html, /aria-expanded="false"/);
   assert.match(html, />Explore</);
+  assert.match(html, /Find parser/);
+  assert.match(html, />Completed</);
+  assert.match(html, /12s/);
   assert.match(html, /aria-label="Open sub-agent session"/);
-  assert.doesNotMatch(html, />completed</);
-  assert.doesNotMatch(html, />Find parser</);
+  assert.doesNotMatch(html, />Agent</);
 
   const ordinaryHtml = renderMessage({
     role: "assistant",
@@ -180,6 +184,145 @@ test("renders subagents as standard tool calls with only an extra session button
     onOpenSession() {},
   });
   assert.doesNotMatch(ordinaryHtml, /Open sub-agent session/);
+});
+
+test("a live sub-agent row reads as running and a failed one surfaces its error", () => {
+  const render = (details, input) => renderMessage({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [{ type: "toolCall", toolCallId: "call-agent-2", toolName: "Agent", input }],
+  }, {
+    toolResults: new Map([["call-agent-2", { role: "toolResult", toolCallId: "call-agent-2", content: [], details }]]),
+    onOpenSession() {},
+  });
+
+  const live = render({
+    kind: "pi-web-subagent",
+    sessionId: "child-2",
+    profile: "worker",
+    description: "Fix the parser",
+    status: "running",
+    runInBackground: true,
+    createdAt: new Date(Date.now() - 5_000).toISOString(),
+  }, { task: "repair the tokenizer" });
+  assert.match(live, />Running</);
+  assert.match(live, /background/);
+  assert.match(live, /animate-spin/);
+
+  // A settled run must never be measured against the clock: no completedAt
+  // means no duration, not a duration of months.
+  const failed = render({
+    kind: "pi-web-subagent",
+    sessionId: "child-3",
+    profile: "worker",
+    description: "Fix the parser",
+    status: "failed",
+    runInBackground: false,
+    error: "worker exited with code 1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  }, { task: "repair the tokenizer" });
+  assert.match(failed, />Failed</);
+  assert.doesNotMatch(failed, /\b\d+m \d+s<\/span>/);
+});
+
+test("another runtime's fan-out renders one status row per child", () => {
+  // nicobailon/pi-subagents reports every child of a fan-out in one tool
+  // result, under its own tool name and details shape.
+  const block = {
+    type: "toolCall",
+    toolCallId: "call-subagent-1",
+    toolName: "subagent",
+    input: { agent: "reviewer", task: "review the diff" },
+  };
+  const result = {
+    role: "toolResult",
+    toolCallId: block.toolCallId,
+    content: [{ type: "text", text: "done" }],
+    details: {
+      mode: "parallel",
+      results: [
+        { index: 0, agent: "reviewer", task: "correctness", sessionId: "c1", runId: "r1", exitCode: 0, usage: {} },
+        { index: 1, agent: "reviewer", task: "tests", sessionId: "c2", runId: "r2", exitCode: 1, usage: {} },
+      ],
+    },
+  };
+  const html = renderMessage({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [block],
+  }, {
+    toolResults: new Map([[block.toolCallId, result]]),
+    onOpenSession() {},
+  });
+
+  assert.equal((html.match(/aria-label="Open sub-agent session"/g) ?? []).length, 2);
+  assert.match(html, />Completed</);
+  assert.match(html, />Failed</);
+  // The runtime's own tool name is replaced by the run's identity, so a fan-out
+  // reads as children rather than as an opaque tool card.
+  assert.doesNotMatch(html, />subagent</);
+  assert.match(html, /correctness/);
+  assert.match(html, /tests/);
+});
+
+test("another runtime's completion notice renders as a group, not a raw blob", () => {
+  // A background run's tool result is written once at dispatch, so this notice
+  // is the only place the finished outcome appears.
+  const html = renderMessage({
+    role: "custom",
+    customType: "subagent-notify",
+    content: "Subagent updates above.",
+    details: [
+      { agent: "worker", status: "completed", source: "async", taskInfo: "fix the parser", resultPreview: "done", durationMs: 4200, workflowRunId: "r1" },
+      { agent: "reviewer", status: "failed", source: "async", resultPreview: "boom", durationMs: 900 },
+    ],
+  }, {});
+
+  assert.match(html, /1 of 2 sub-agents need attention/);
+  assert.match(html, /aria-expanded="false"/);
+  // The generic custom card would show the raw text and a JSON blob instead.
+  assert.doesNotMatch(html, /Subagent updates above/);
+});
+
+test("a fan-out shows its output once under the group, not on an arbitrary row", () => {
+  const block = {
+    type: "toolCall",
+    toolCallId: "call-subagent-2",
+    toolName: "subagent",
+    input: {},
+  };
+  const result = {
+    role: "toolResult",
+    toolCallId: block.toolCallId,
+    content: [{ type: "text", text: "the aggregate reply" }],
+    details: {
+      mode: "parallel",
+      results: [
+        { index: 0, agent: "a", task: "t1", sessionId: "c1", runId: "r1", exitCode: 0, usage: {} },
+        { index: 1, agent: "b", task: "t2", sessionId: "c2", runId: "r2", exitCode: 0, usage: {} },
+      ],
+    },
+  };
+  const html = renderMessage({
+    role: "assistant", provider: "anthropic", model: "claude-test", content: [block],
+  }, { toolResults: new Map([[block.toolCallId, result]]), onOpenSession() {} });
+
+  // Per-child text is not in the details, so the call's output is shown once and
+  // labelled, rather than hanging off whichever row happened to be last.
+  assert.match(html, /Show output/);
+  assert.equal((html.match(/aria-label="Open sub-agent session"/g) ?? []).length, 2);
+});
+
+test("an unrelated custom message keeps the generic card", () => {
+  const html = renderMessage({
+    role: "custom",
+    customType: "some-other-extension",
+    content: "hello",
+    details: [{ agent: "a", status: "completed" }],
+  }, {});
+  assert.match(html, /hello/);
 });
 
 const COMPLETE_SKILL_EXPANSION = `<skill name="review" location="/skills/review/SKILL.md">

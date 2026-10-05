@@ -11,7 +11,12 @@ test("keeps the main session first and makes every agent session selectable", ()
   assert.ok(subagentRows > mainRow);
   assert.match(source, /onSelect=\{\(\) => onSelectSession\(rootSession\)\}/);
   assert.match(source, /onSelect=\{\(\) => onSelectSession\(session\)\}/);
-  assert.match(source, /aria-selected=\{selected\}/);
+  // A listbox may only contain options; the row hosts sibling control
+  // buttons and a text input, so the panel is a plain labelled group.
+  assert.match(source, /role="group"/);
+  assert.doesNotMatch(source, /role="listbox"/);
+  assert.doesNotMatch(source, /role="option"/);
+  assert.match(source, /aria-current=\{selected \? "true" : undefined\}/);
 });
 
 test("sorts running subagents first and enables search only for larger families", () => {
@@ -27,9 +32,29 @@ test("renders as a compact left-positioned dropdown without a centered inner wid
   assert.doesNotMatch(source, /maxWidth: 680/);
 });
 
-test("shows persisted completion states while live running state takes precedence", () => {
-  assert.match(source, /const status: SubagentSessionStatus = running \? "running" : relation\?\.status \?\? "completed"/);
+test("shows persisted completion states while a live server status takes precedence", () => {
+  // The catalogue alone used to decide: a run whose process died kept saying
+  // "running" forever. Status now comes from the caller, which merges the live
+  // server state over the persisted one.
+  assert.match(source, /status: SubagentSessionStatus;\n  onSelect/);
+  assert.match(source, /status=\{statusOf\(session\)\}/);
+  assert.match(source, /statuses\.get\(session\.id\) \?\? session\.relation\.status/);
+  assert.match(source, /if \(runningSessionIds\.has\(session\.id\)\) return "running"/);
   assert.match(source, /t\(`agentSwitcher\.status\.\$\{status\}`\)/);
   assert.match(source, /status === "failed"/);
   assert.match(source, /status === "aborted" \|\| status === "interrupted"/);
+});
+
+test("offers stop and steer only for runs the server still has live", () => {
+  assert.match(source, /const canControl = !main && isLive\(status\)/);
+  assert.match(source, /status === "starting" \|\| status === "queued" \|\| status === "running"/);
+  assert.match(source, /steerSubagentRun\(session\.id, message\)/);
+  assert.match(source, /abortSubagentRun\(session\.id\)/);
+  // Stop-all must not let one failure strand the remaining runs.
+  assert.match(source, /Promise\.allSettled\(liveSubagents\.map/);
+});
+
+test("keeps controls outside the row's select button so the markup stays valid", () => {
+  assert.match(source, /gridTemplateColumns: "minmax\(0, 1fr\) auto"/);
+  assert.match(source, /event\.stopPropagation\(\); onClick\(\);/);
 });

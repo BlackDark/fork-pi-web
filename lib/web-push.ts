@@ -1,11 +1,10 @@
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import webpush from "web-push";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import { enLocale } from "./i18n/messages/en";
 import { zhCNLocale } from "./i18n/messages/zh-CN";
-import { getAgentDir } from "./session-reader";
+import { getAgentDir, listAllSessions } from "./session-reader";
 
 export interface PushSubscriptionRecord {
   endpoint: string;
@@ -92,7 +91,10 @@ function getDefaultEnvironment(): WebPushEnvironment {
     async listSessionNames() {
       const names = new Map<string, string>();
       try {
-        for (const session of await SessionManager.listAll()) {
+        // pi-web's own listing, not SessionManager.listAll(): subagent children
+        // live under their parent and the SDK reads a project dir one level deep.
+        // allowStale matches the best-effort intent below: a title is a nicety.
+        for (const session of await listAllSessions({ allowStale: true })) {
           if (session.name) names.set(session.id, session.name);
         }
       } catch {

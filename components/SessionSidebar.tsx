@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
-import type { SessionInfo } from "@/lib/types";
+import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
+import { subagentStatusColor, summarizeSubagents } from "@/lib/subagent-family-status";
+import { isLiveSubagentStatus } from "@/lib/subagent-client";
+import { useExternalSubagentRuns, useLiveSubagentStatuses } from "@/hooks/useLiveSubagentStatus";
+
+/** A child worth polling: the catalogue has not recorded it as finished. */
+function isPossiblyLiveSubagent(session: SessionInfo): boolean {
+  return session.relation?.kind === "subagent" && isLiveSubagentStatus(session.relation.status);
+}
 import { listSessionFamilies } from "@/lib/session-family";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
@@ -121,6 +129,8 @@ function sessionListUrl(summary: boolean, force: boolean): string {
 interface Props {
   selectedSessionId: string | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean, entryId?: string, blockIndex?: number) => void;
+  /** Open the sub-agent dock for a family root, from that family's sidebar row. */
+  onOpenAgents?: (rootSessionId: string) => void;
   onNewSession?: (sessionId: string, cwd: string) => void;
   initialSessionId?: string | null;
   skipInitialProjectSelection?: boolean;
@@ -395,7 +405,7 @@ function PiWebTitle() {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onOpenAgents, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   // Tracked in a ref only: the version is compared against the polled value to
@@ -1160,6 +1170,52 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     sessionFamilies.findIndex((family) => family.root.id === focusedSessionId),
   ), [focusedSessionId, listScrollTop, listViewportH, sessionFamilies]);
 
+  // The chip must agree with the Agents panel, so it reads the same live status
+  // the panel does instead of the catalogue's stale snapshot. Only runs the
+  // catalogue still calls live are worth watching: a settled family must not
+  // wake the poller.
+  const allSubagentIds = useMemo(
+    () => sessionFamilies.flatMap((family) => family.subagents
+      .filter(isPossiblyLiveSubagent)
+      .map((session) => session.id)),
+    [sessionFamilies],
+  );
+  const liveStatuses = useLiveSubagentStatuses(allSubagentIds);
+  // Only the session you have open is polled for another extension's runs.
+  // Asking about every session's children meant one request carrying every
+  // child path in the sidebar, which the server has to cap — past the cap the
+  // matches dropped silently and live status stopped working with no error.
+  // The count on each row is free: family grouping already knows it.
+  const openFamilyPaths = useMemo(() => {
+    const family = sessionFamilies.find((entry) => entry.root.id === selectedSessionId);
+    return family ? family.subagents.map((session) => session.path) : [];
+  }, [selectedSessionId, sessionFamilies]);
+  // Runs another extension owns, so the chip agrees with the dock and the
+  // transcript rather than showing a stale snapshot.
+  // Name the session files the chip needs, so the server canonicalises them:
+  // the paths the extension recorded can differ by symlink resolution.
+  const { bySessionPath: externalStatuses } = useExternalSubagentRuns(openFamilyPaths);
+
+  // A child started by another extension never touches /api/agent/running, so
+  // none of the transitions this list reloads on ever fire for it and the new
+  // session stayed invisible until the page was reloaded. Reload as soon as a
+  // run names a session file the catalogue has not seen. Only the open session
+  // is polled, so this fires for that session's children; another session's
+  // children are picked up when it is opened.
+  const knownSessionPaths = useMemo(
+    () => new Set(allSessions.map((session) => session.path)),
+    [allSessions],
+  );
+  const externalPathsKey = useMemo(
+    () => [...externalStatuses.keys()].sort().join("\u0000"),
+    [externalStatuses],
+  );
+  useEffect(() => {
+    if (externalPathsKey === "") return;
+    const unknown = externalPathsKey.split("\u0000").some((path) => !knownSessionPaths.has(path));
+    if (unknown) void loadSessions(false, true);
+  }, [externalPathsKey, knownSessionPaths, loadSessions]);
+
   return (
     <div
       ref={sessionPaneResizer.panelRef}
@@ -1879,6 +1935,19 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             {virtualIndices.map((index) => {
               const family = sessionFamilies[index];
               const familySessions = [family.root, ...family.subagents];
+              const familySubagents = family.subagents.map((session) => {
+                if (session.relation?.kind !== "subagent") return session;
+                const status = externalStatuses.get(session.path)?.status
+                  ?? liveStatuses.get(session.id)
+                  ?? session.relation.status;
+                return { ...session, relation: { ...session.relation, status } };
+              });
+              const familySummary = summarizeSubagents(familySubagents);
+              // A child the wrapper still reports as running overrides anything
+              // persisted, including a stale "completed".
+              const familySubagentStatus = family.subagents.some((session) => runningSessionIds.has(session.id))
+                ? "running" as SubagentSessionStatus
+                : familySummary.status;
               const displaySession = family.latestModified === family.root.modified
                 ? family.root
                 : { ...family.root, modified: family.latestModified };
@@ -1896,6 +1965,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     isRunning={familySessions.some((session) => runningSessionIds.has(session.id))}
                     isUnread={familySessions.some((session) => unreadSessionIds.has(session.id))}
                     onClick={() => handleSelectSessionFromList(family.root)}
+                    subagentCount={familySummary.count}
+                    subagentStatus={familySubagentStatus}
+                    onOpenAgents={() => {
+                      handleSelectSessionFromList(family.root);
+                      onOpenAgents?.(family.root.id);
+                    }}
                     onRenamed={loadSessions}
                     onDeleted={(id) => {
                       onSessionDeleted?.(id);
@@ -2214,9 +2289,9 @@ function SessionItem({
   onRenamed,
   onDeleted,
   depth = 0,
-  hasChildren = false,
-  collapsed = false,
-  onToggleCollapse,
+  subagentCount = 0,
+  subagentStatus = null,
+  onOpenAgents,
 }: {
   session: SessionInfo;
   isSelected: boolean;
@@ -2226,9 +2301,9 @@ function SessionItem({
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
   depth?: number;
-  hasChildren?: boolean;
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
+  subagentCount?: number;
+  subagentStatus?: SubagentSessionStatus | null;
+  onOpenAgents?: () => void;
 }) {
   const { locale, t } = useI18n();
   const [hovered, setHovered] = useState(false);
@@ -2473,23 +2548,33 @@ function SessionItem({
             </div>
           </div>
 
-          {/* Collapse toggle — always visible when has children */}
-          {hasChildren && (
+          {/* Sub-agent chip — the row's only sign it has children. It pulses
+              while any child is live and carries the family's worst status, so
+              a fan-out can be judged without opening anything. */}
+          {subagentCount > 0 && (
             <button
-              onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
-              title={t(collapsed ? "sidebar.expandSubagents" : "sidebar.collapseSubagents")}
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenAgents?.(); }}
+              title={`${t("agentSwitcher.count", { count: subagentCount })}${subagentStatus ? ` — ${t(`agentSwitcher.status.${subagentStatus}`)}` : ""}`}
+              aria-label={t("agentSwitcher.openFamily")}
               style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 20, height: 20, padding: 0, flexShrink: 0,
-                background: "none", border: "none",
-                color: "var(--text-dim)", cursor: "pointer",
-                transform: collapsed ? "rotate(-90deg)" : "none",
-                transition: "transform 0.15s",
+                display: "flex", alignItems: "center", gap: 4, flexShrink: 0,
+                height: 20, padding: "0 6px",
+                border: "1px solid var(--border)", borderRadius: 10,
+                background: "var(--bg)", color: subagentStatus ? subagentStatusColor(subagentStatus) : "var(--text-dim)",
+                fontSize: 10, cursor: "pointer",
               }}
             >
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="2 3.5 5 6.5 8 3.5" />
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
               </svg>
+              <span>{subagentCount}</span>
+              {subagentStatus && (
+                <span
+                  className={subagentStatus === "running" || subagentStatus === "starting" ? "animate-pulse" : undefined}
+                  style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor", flexShrink: 0 }}
+                />
+              )}
             </button>
           )}
 

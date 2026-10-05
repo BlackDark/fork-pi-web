@@ -148,3 +148,23 @@ test("hides subagent rows and aggregates their state into the main session row",
   assert.match(source, /familySessions\.some\(\(session\) => runningSessionIds\.has\(session\.id\)\)/);
   assert.doesNotMatch(source, /function SessionTreeItem/);
 });
+
+test("reloads the list when another extension names a session we have not listed", () => {
+  // The sidebar reloads on running-session transitions, but a child started by
+  // another extension never reaches /api/agent/running, so the new session was
+  // invisible until the page was reloaded.
+  assert.match(source, /const unknown = externalPathsKey\.split\("\\u0000"\)\.some\(\(path\) => !knownSessionPaths\.has\(path\)\)/);
+  assert.match(source, /if \(unknown\) void loadSessions\(false, true\)/);
+  // Guard against a reload loop: the trigger depends on the catalogue catching up.
+  assert.match(source, /knownSessionPaths = useMemo\(/);
+});
+
+test("asks about another extension's runs only for the session that is open", () => {
+  // Polling every session meant one request carrying every child path in the
+  // sidebar, which the server caps — past the cap matches dropped silently and
+  // live status stopped working. The open session is polled; the count on every
+  // row is free because family grouping already knows it.
+  assert.match(source, /const openFamilyPaths = useMemo\(\(\) => \{[\s\S]*?sessionFamilies\.find\(\(entry\) => entry\.root\.id === selectedSessionId\)/);
+  assert.match(source, /useExternalSubagentRuns\(openFamilyPaths\)/);
+  assert.doesNotMatch(source, /allSubagentPaths/);
+});

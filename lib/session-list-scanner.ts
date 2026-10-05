@@ -10,6 +10,7 @@ import type { Dirent } from "node:fs";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { resolveParentsByDirectory } from "./nested-session-parent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 
 export interface ScannedSessionInfo {
@@ -22,6 +23,13 @@ export interface ScannedSessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	parentSessionPath?: string;
+	/**
+	 * True when the parent link came from the child's directory rather than a
+	 * `parentSession` header. Runtimes that do not write that header still group
+	 * children under a folder named for the parent, and such a child is a
+	 * sub-agent, not a fork — forks stay top-level by design.
+	 */
+	parentByDirectory?: boolean;
 	/** True when only header/stat metadata was available for this listing. */
 	detailsPending?: boolean;
 }
@@ -243,6 +251,32 @@ export async function scanSessionFileInfo(
 	}
 }
 
+// Subagent children live in a directory named after their parent, so project
+// directories are walked to a bounded depth rather than read one level deep.
+// Depth is capped so a symlink cycle cannot make the walk unbounded.
+export const MAX_SESSION_DIR_DEPTH = 8;
+
+async function collectSessionFiles(dir: string, depth: number, files: string[]): Promise<void> {
+	let entries: Dirent[];
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		// unreadable dir: same skip-as-absent semantics as the SDK
+		return;
+	}
+	for (const entry of entries) {
+		// Descend only into real directories. The per-parent subdirectories are
+		// created by SessionManager, so following symlinks here would only let a
+		// planted link pull jsonl from anywhere on disk into the catalogue, and
+		// would multiply the readdir fan-out.
+		if (entry.isDirectory()) {
+			if (depth < MAX_SESSION_DIR_DEPTH) await collectSessionFiles(join(dir, entry.name), depth + 1, files);
+		} else if (entry.name.endsWith(".jsonl")) {
+			files.push(join(dir, entry.name));
+		}
+	}
+}
+
 async function enumerateSessionFiles(sessionsDir: string): Promise<string[]> {
 	let dirs: Dirent[];
 	try {
@@ -256,14 +290,7 @@ async function enumerateSessionFiles(sessionsDir: string): Promise<string[]> {
 
 	const files: string[] = [];
 	for (const dir of dirs) {
-		const dirPath = join(sessionsDir, dir.name);
-		try {
-			for (const f of await readdir(dirPath)) {
-				if (f.endsWith(".jsonl")) files.push(join(dirPath, f));
-			}
-		} catch {
-			// unreadable project dir: same skip-as-absent semantics as the SDK
-		}
+		await collectSessionFiles(join(sessionsDir, dir.name), 1, files);
 	}
 	return files;
 }
@@ -358,9 +385,10 @@ function queueIndexPersist(): void {
 }
 
 /**
- * Incremental equivalent of SessionManager.listAll(): rescans only files whose
- * (size, mtimeMs) changed since the last pass. Output ordering matches the SDK
- * catalogue (modified descending).
+ * Incremental equivalent of `SessionManager.listAll()` for the sessions tree,
+ * including the per-parent sub-directories the SDK does not descend into: it
+ * rescans only files whose (size, mtimeMs) changed since the last pass. Output
+ * ordering matches the SDK catalogue (modified descending).
  */
 export async function listSessionsIncremental(
 	options: { deferDetails?: boolean } = {},
@@ -439,14 +467,31 @@ export async function listSessionsIncremental(
 	// SDK reads files newest-mtime first (then reverse filename) so resume can
 	// show results progressively, and its stable sort keeps that order for
 	// sessions with equal activity time.
-	return results
+	return linkNestedChildren(results
 		.flatMap((info, resultIndex) => (info ? [{ info, mtimeMs: mtimes[resultIndex] }] : []))
 		.sort((a, b) =>
 			b.info.modified.getTime() - a.info.modified.getTime()
 			|| b.mtimeMs - a.mtimeMs
 			|| basename(b.info.path).localeCompare(basename(a.info.path)),
 		)
-		.map(({ info }) => info);
+		.map(({ info }) => info));
+}
+
+/**
+ * Recover a parent from where the file sits. Done after the scan so it applies
+ * to index hits as well as freshly read files. A header link always wins: it is
+ * the authoritative one, and only a header-less child needs the directory.
+ */
+function linkNestedChildren(infos: ScannedSessionInfo[]): ScannedSessionInfo[] {
+	const byDirectory = resolveParentsByDirectory(infos.map((info) => info.path));
+	if (byDirectory.size === 0) return infos;
+	return infos.map((info) => {
+		if (info.parentSessionPath) return info;
+		const parentSessionPath = byDirectory.get(info.path);
+		return parentSessionPath
+			? { ...info, parentSessionPath, parentByDirectory: true }
+			: info;
+	});
 }
 
 /** Test seam: drop all in-memory index state. */
